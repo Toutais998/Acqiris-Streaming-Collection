@@ -125,7 +125,7 @@ namespace
 
     // 触发配置参数
     ViConstString triggerSource = "External1";                     // 触发源为外部触发
-    ViReal64 const triggerLevel = 1.5;                             // 触发电平2V
+    ViReal64 const triggerLevel = 1.5; // 卡端 50 Ω 实际触发电平；不可直接等同 1 MΩ 示波器开路幅值
     ViInt32 const triggerSlope = AQMD3_VAL_TRIGGER_SLOPE_POSITIVE; // 触发沿为上升沿
 
     // 读取参数

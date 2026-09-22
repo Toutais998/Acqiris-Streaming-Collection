@@ -15,6 +15,8 @@ The numbered and named backup sources that previously lived beside the active en
 
 Added `Trouble_Shot.md` and this directory-local `AGENTS.md`. The troubleshooting note records the manual-confirmed fixed 50 ohm termination, the recommended 2.5 V rising-edge trigger for a 0–5 V line signal, and the approximately 1.8 GB/s sustained-stream calculation behind the overflow investigation.
 
+补充电压换算约定：用户给出的幅值默认是示波器 1 MΩ 端口读数；接入固定 50 Ω 负载后必须以实测负载电压重新计算，并在代码注释中注明。
+
 新增 MATLAB 重建脚本，按当前 `D:\Acq_Storage` 二进制输出读取每条 line，并以 512 个像素的积分/平均值生成 512×512 图像。同步补充了信号发生器测试建议和中文提交规范。
 
 The source of truth is `CPP_IVIC_Streaming.cpp`. Use Git commits/tags for future snapshots instead of copying `.cpp` files with version names.
