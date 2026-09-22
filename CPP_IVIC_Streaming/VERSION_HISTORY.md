@@ -11,4 +11,8 @@ The numbered and named backup sources that previously lived beside the active en
 | 第22–25版 | Follow-up backups and BNU parameter updates |
 | current | Line-triggered full-line record configuration; one record per 109.8 Hz line |
 
+## 2026-09-22
+
+新增 MATLAB 重建脚本，按当前 `D:\Acq_Storage` 二进制输出读取每条 line，并以 512 个像素的积分/平均值生成 512×512 图像。同步补充了信号发生器测试建议和中文提交规范。
+
 The source of truth is `CPP_IVIC_Streaming.cpp`. Use Git commits/tags for future snapshots instead of copying `.cpp` files with version names.

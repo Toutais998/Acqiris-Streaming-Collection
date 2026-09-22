@@ -14,6 +14,8 @@ Do not silently discard samples or increase the buffer pool without checking RAM
 
 ## Change policy
 
+- 每次对话中发生代码、配置或文档修改后，必须补充中文注释/说明，使用中文提交信息创建 Git commit，并立即 push 到远程仓库；如果 push 失败，必须在回复中明确说明原因。
+
 - Keep the active source named `CPP_IVIC_Streaming.cpp`.
 - Record rationale and parameter changes in `CPP_IVIC_Streaming/VERSION_HISTORY.md` and in Git commit messages.
 - Do not reintroduce numbered backup `.cpp` files into the active project directory.

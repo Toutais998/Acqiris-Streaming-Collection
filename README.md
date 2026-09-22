@@ -32,3 +32,15 @@
 4. `D:\Acq_Storage` 存在且有足够空间。
 
 版本变更记录见 [`CPP_IVIC_Streaming/VERSION_HISTORY.md`](CPP_IVIC_Streaming/VERSION_HISTORY.md)。旧版本源文件不再放在活动目录中，后续版本应通过 Git 提交记录管理。
+
+## 信号发生器测试建议
+
+建议使用双通道信号发生器：
+
+- CH1（接 `External1`，作为 line 触发）：109.8 Hz、方波/脉冲，0–5 V TTL 电平，占空比 90%，上升沿触发。若设备不允许 5 V，使用 0–3.3 V，并将 C++ 中 `triggerLevel` 调整到约 1.0–1.5 V。
+- CH2（接 `Channel1`，模拟 PMT/SPAD）：先用 2.5 MHz 方波、50% 占空比、0–1.0 V（0.5 V 直流偏置、1 Vpp）验证采集链路。2.5 MHz 在 16 µs 像素窗口内约有 40 个周期，像素平均后应得到近似均匀的灰度图。
+- 做空间图案测试时，不要只输出固定正弦波；应让 CH2 的幅值按 line 或外部包络变化。例如使用任意波形/AM，在 4.66 s（约 512 条 line）周期内设置 512 个 line 的幅度包络，或先用每行不同幅度的阶梯波验证 Y 方向重建。
+
+CH1 的 line 触发与 CH2 的模拟信号必须共地；输入端先确认不会超过当前通道量程。当前通道配置为 ±2.5 V、offset 1.25 V，建议所有测试波形保持在约 0–2 V 范围内。不要把 2.5 MHz 信号接到 `External1` 作为触发。
+
+采集完成后运行 `Matlab/reconstruct_acqiris_scan.m`。脚本从与 C++ 相同的 `D:\Acq_Storage` 中选择最新 `.dat` 文件，按每条 line 的 8,193,600 个 int16 样本分成 512 个像素并求均值，生成 512×512 图像。
