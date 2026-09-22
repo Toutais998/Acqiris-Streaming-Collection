@@ -13,6 +13,8 @@ The numbered and named backup sources that previously lived beside the active en
 
 ## 2026-09-22
 
+新增--frame整帧采集模式：保持8193600点/line、1GS/s和1.5V上升沿，收到512条完整记录后停止，输出独立marker CSV并验证索引连续。真实卡完成512条、4.67028秒、8390246400字节、无overflow/积压。MATLAB原脚本因8193600/512=16003.125而无法整除重建，现改为整数边界分箱，不丢样；调用MATLAB2025完成512×512重建，输出MAT、固定灰度PNG、增强PNG、预览和JSON。方波估计2.5MHz，图像近均匀；8.77%样本达到ADC下限、一次marker间隔10.104ms，已记录于Matlab/FRAME_RECONSTRUCTION.md。
+
 新增命令行诊断模式及交接报告：真实SA230P上完成1/2/10/110/550条记录、完整/半/1ms窗口、旧休眠/取消休眠及落盘对照。旧版每轮sleep_for(1us)实测产生毫秒级等待和流积压，marker仍连续；正常路径改用yield，修复firstElement偏移和对齐余量，样本未到时保留marker，短写/部分记录显式报错，停卡后再排空写线程。8块池、1GS/s、8193600点及50Ω端1.5V上升沿保持；5秒正常实测548条、8980185600字节、无overflow。32ns仅为计算假设，非实测；550条诊断中有一次10.104ms间隔待查。详见HANDOFF.md及DIAGNOSTIC_RESULTS.txt。
 
 Added `Trouble_Shot.md` and this directory-local `AGENTS.md`. The troubleshooting note records the manual-confirmed fixed 50 ohm termination, the recommended 2.5 V rising-edge trigger for a 0–5 V line signal, and the approximately 1.8 GB/s sustained-stream calculation behind the overflow investigation.

@@ -18,6 +18,8 @@ The XY galvo emits one approximately 9,104 microsecond line period at about 109.
 
 ## Change requirements
 
+For one complete image, use `--frame`: 512 complete records, default 8,193,600 samples/line, asynchronous disk writer, and a 10-second timeout. The raw file remains headerless int16; `.dat.markers.csv` stores timing separately. MATLAB must bin fractional samples-per-pixel using boundaries (16,003.125 average), not reshape into equal integer bins. See `../Matlab/FRAME_RECONSTRUCTION.md` for the latest end-to-end real-card result.
+
 Read `HANDOFF.md` and `DIAGNOSTIC_RESULTS.txt` for the real-card tests. Unconditional `sleep_for(1us)` caused millisecond host stalls and stream backlog. Use marker timestamps to distinguish accepted triggers from host readout rate. Never assume `firstElement` is zero (8 was observed). The `--diag samples records legacySleep disk` mode explicitly consumes without saving when disk=0; it is not a production acquisition. Record size must be a multiple of 64 for this card. Voltage conversion is nonlinear for the user's source; use measured 50 ohm levels.
 
 - Keep the active source named `CPP_IVIC_Streaming.cpp`; do not add numbered backup `.cpp` files.

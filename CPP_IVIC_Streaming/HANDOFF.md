@@ -1,5 +1,7 @@
 # SA230P 实测交接报告（2026-09-22）
 
+最新进展：已新增--frame模式并真实采集512条，MATLAB2025成功重建512×512图像。参见 [整帧重建报告](../Matlab/FRAME_RECONSTRUCTION.md)。下方测试是先前诊断记录；D盘旧数据已由用户清空，新文件为BNU_Mark25_Streaming_0922_162800.dat。
+
 ## 已完成与核心结论
 
 已修改唯一活动源码 CPP_IVIC_Streaming.cpp，通过指定 Visual Studio 2022 的 devenv.com 编译 Debug/Release x64，并连接真实 SA230P AQ00071865（CST，驱动3.9.20621.38，固件3.7.393.0）执行测试。信号由用户保持开启，External1实测109.84118Hz、周期9.104ms、上升530ns、下降581ns，触发仍为50Ω卡端1.5V上升沿。
@@ -82,4 +84,3 @@ deadTime=32ns仅参与代码计算，未下发到驱动，不是本次实测。8
 6. 原有源文件中的未调用辅助FetchElements/SaveRecord仍保留，不将其视为活动数据路径。正常文件仍为连续int16，无marker头；不能按SaveRecord函数误读格式。
 
 本轮所有测试由真实卡完成，Debug/Release均经devenv.com成功构建，保留localtime/fopen的C4996警告。根目录AGENTS.md原有暂存修改属于用户，不纳入本次提交。
-

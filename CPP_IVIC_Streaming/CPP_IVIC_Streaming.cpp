@@ -296,12 +296,13 @@ void Diagnose(ViSession session, ViInt64 samples, int target, bool legacySleep,
 
 int main(int argc, char** argv)
 {
+    bool frameMode=argc==2 && std::string(argv[1])=="--frame"; // 中文：完整帧固定512条line，窗口仍为8193.6us。
     bool diagnostic=argc>1 && std::string(argv[1])=="--diag";
     ViInt64 recordSize=::recordSize;
     int target=10; bool legacySleep=false, diagnosticDisk=false;
-    if(argc>1)
+    if(argc>1 && !frameMode)
     {
-        if(!diagnostic || argc!=6) { cerr << "Usage: --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
+        if(!diagnostic || argc!=6) { cerr << "Usage: --frame OR --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
         try { recordSize=std::stoll(argv[2]); target=std::stoi(argv[3]); legacySleep=std::stoi(argv[4])!=0; diagnosticDisk=std::stoi(argv[5])!=0; }
         catch(...) { return 2; }
         if(recordSize<1024 || recordSize>8193600 || recordSize%64 || target<1 || target>600) return 2;
@@ -491,13 +492,15 @@ int main(int argc, char** argv)
         cout << "Acquisition is running\n\n";
 
         // 计算采集结束时间点
-        auto const endTime = std::chrono::steady_clock::now() + streamingDuration;
+        auto const endTime = std::chrono::steady_clock::now() + (frameMode ? seconds(10) : streamingDuration);
         std::chrono::steady_clock::time_point acquisitionStartTime =
             std::chrono::steady_clock::now();
 
         // 采集循环，持续到采集时长结束
         ViInt64 fetchedBytes=0, maxFirstElement=0, maxRemaining=0;
-        while (std::chrono::steady_clock::now() < endTime)
+        std::vector<LibTool::TriggerMarker> frameMarkers;
+        frameMarkers.reserve(512);
+        while (std::chrono::steady_clock::now() < endTime && (!frameMode || totalTriggers<512))
         {
             if(g_writeFailed) throw runtime_error("Disk short write");
             // 读取触发标记数据
@@ -518,6 +521,13 @@ int main(int argc, char** argv)
                 }
                 if(numAvailableRecords!=1 || markerArraySegment.Size()!=maxMarkerElements)
                     throw runtime_error("Unexpected marker count");
+                if(frameMode)
+                {
+                    auto marker=LibTool::StandardStreaming::DecodeTriggerMarker(markerArraySegment);
+                    if(!frameMarkers.empty() && marker.recordIndex!=frameMarkers.back().recordIndex+1)
+                        throw runtime_error("Frame marker index discontinuity");
+                    frameMarkers.push_back(marker);
+                }
 
                 // --- 核心修改：获取采样数据并传递给写入线程 ---
 
@@ -618,6 +628,19 @@ int main(int argc, char** argv)
         int flushResult=fflush(outputFile);
         int closeResult=fclose(outputFile); outputFile=nullptr;
         if(g_writeFailed || flushResult || closeResult) throw runtime_error("Disk write/flush/close failed");
+        if(frameMode)
+        {
+            if(totalTriggers!=512 || frameMarkers.size()!=512) throw runtime_error("Incomplete 512-line frame");
+            // 中文：原始dat仍为纯int16，独立CSV保存板卡时间戳以供重建校验。
+            std::ofstream metadata(outputFileName+".markers.csv");
+            metadata << "line,record_index,timestamp_s,interval_s\n" << std::setprecision(15);
+            for(size_t i=0;i<frameMarkers.size();++i)
+                metadata << i+1 << ',' << frameMarkers[i].recordIndex << ','
+                         << frameMarkers[i].GetInitialXTime(timestampPeriod) << ','
+                         << (i ? (frameMarkers[i].absoluteSampleIndex-frameMarkers[i-1].absoluteSampleIndex)*timestampPeriod : 0) << '\n';
+            metadata.close();
+            if(!metadata) throw runtime_error("Frame marker CSV write failed");
+        }
         cout << std::dec << "RUN_RESULT records=" << totalTriggers << " elapsed_s=" << actualSeconds
              << " fetched_bytes=" << fetchedBytes << " written_bytes=" << totalDataWritten
              << " max_first=" << maxFirstElement << " max_remaining=" << maxRemaining
@@ -625,7 +648,7 @@ int main(int argc, char** argv)
 
         // 输出最终统计信息
         cout << "\n采集结束统计:\n";
-        cout << "总运行时间: " << (streamingDuration / seconds(1)) << " 秒\n";
+        cout << "实际采集时间: " << actualSeconds << " 秒\n"; // 中文：整帧模式按512条停止，不再打印固定5秒。
         cout << "总检测到的触发次数: " << totalTriggers << "\n";
         cout << "总写入数据量: " << totalDataWritten / (1024.0 * 1024.0) << " MB\n";
 
