@@ -101,9 +101,9 @@ namespace
     // XY 双振镜扫描：每个 line 的上升沿启动一条 record。
     // line 周期 9104 us、有效占空比 0.9，因此有效采集窗口约 8193.6 us。
     // 记录长度按采样率换算，取整后为 8,193,600 samples（512 个像素 line）。
-    ViReal64 const linePeriod = 9104e-6;              //这里去把Scanimage的line Peroid填过来
+    ViReal64 const linePeriod = 9104e-6; // 这里去把Scanimage的line Peroid填过来
     ViReal64 const lineActiveDuty = 0.9;
-    ViInt64 const pixelsPerLine = 512;
+    ViInt64 const pixelsPerLine = 512; // 每行像素数
     ViReal64 const activeLineDuration = linePeriod * lineActiveDuty;
     ViReal64 const pixelPeriod = activeLineDuration / pixelsPerLine;
     ViInt64 const recordSize = static_cast<ViInt64>(

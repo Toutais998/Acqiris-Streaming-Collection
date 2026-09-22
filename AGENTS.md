@@ -13,8 +13,7 @@ The XY galvo scanner emits a 9,104 µs line period at approximately 109.8 Hz. Ni
 Do not silently discard samples or increase the buffer pool without checking RAM and sustained disk bandwidth. At 1 GS/s, raw 16-bit data is about 2 GB/s. A buffer-pool timeout is intentional back-pressure and must remain visible in logs/console output. Check `firstElement` and marker counts whenever changing the fetch path.
 
 ## Change policy
-
-- 每次对话中发生代码、配置或文档修改后，必须补充中文注释/说明，使用中文提交信息创建 Git commit，并立即 push 到远程仓库；如果 push 失败，必须在回复中明确说明原因。
+- After code, configuration, or document modifications occur during each conversation, Chinese comments/explanations must be added. Git commits should be created using Chinese submission information, and pushed to the remote repository after all changes have been completed at the end of the conversation. If the push fails, the reason must be clearly stated in the reply.
 
 - Keep the active source named `CPP_IVIC_Streaming.cpp`.
 - Record rationale and parameter changes in `CPP_IVIC_Streaming/VERSION_HISTORY.md` and in Git commit messages.
