@@ -1,0 +1,36 @@
+Driver identifier:  AqMD3
+Driver revision:    3.9.20621.38
+Driver vendor:      Acqiris
+Driver description: IVI-C Driver for Acqiris Signal Acquisition Components [Compiled for 64-bit]
+Instrument model:   SA230P
+Firmware revision:  Stage1 Version 3.7.393.0, FPGA Firmware Version 3.7.393.70110/AVG.CST.DGT/SFIR, FE CPLD 1/0.4.0.0
+Serial number:      AQ00071865
+Option:      CH1,MEA,EXC,DGT,CST
+NbrADCBits:      14
+
+Record size (samples): 32 ; 	readout time (ms): 0.162386 ; 	transfer rate (MB/s): 0.39
+Record size (samples): 64 ; 	readout time (ms): 0.124518 ; 	transfer rate (MB/s): 1.03
+Record size (samples): 128 ; 	readout time (ms): 0.116127 ; 	transfer rate (MB/s): 2.20
+Record size (samples): 256 ; 	readout time (ms): 0.145018 ; 	transfer rate (MB/s): 3.53
+Record size (samples): 512 ; 	readout time (ms): 0.108734 ; 	transfer rate (MB/s): 9.42
+Record size (samples): 1024 ; 	readout time (ms): 0.157447 ; 	transfer rate (MB/s): 13.01
+Record size (samples): 2048 ; 	readout time (ms): 0.115608 ; 	transfer rate (MB/s): 35.43
+Record size (samples): 4096 ; 	readout time (ms): 0.108507 ; 	transfer rate (MB/s): 75.50
+Record size (samples): 8192 ; 	readout time (ms): 0.119409 ; 	transfer rate (MB/s): 137.21
+Record size (samples): 16384 ; 	readout time (ms): 0.122525 ; 	transfer rate (MB/s): 267.44
+Record size (samples): 32768 ; 	readout time (ms): 0.118472 ; 	transfer rate (MB/s): 553.18
+Record size (samples): 65536 ; 	readout time (ms): 0.147759 ; 	transfer rate (MB/s): 887.07
+Record size (samples): 131072 ; 	readout time (ms): 0.204111 ; 	transfer rate (MB/s): 1284.32
+Record size (samples): 262144 ; 	readout time (ms): 0.242149 ; 	transfer rate (MB/s): 2165.15
+Record size (samples): 524288 ; 	readout time (ms): 0.330152 ; 	transfer rate (MB/s): 3176.04
+Record size (samples): 1000000 ; 	readout time (ms): 0.477944 ; 	transfer rate (MB/s): 4184.59
+Record size (samples): 2000000 ; 	readout time (ms): 0.913470 ; 	transfer rate (MB/s): 4378.91
+Record size (samples): 4000000 ; 	readout time (ms): 1.498238 ; 	transfer rate (MB/s): 5339.61
+Record size (samples): 5000000 ; 	readout time (ms): 1.988965 ; 	transfer rate (MB/s): 5027.74
+Record size (samples): 7500000 ; 	readout time (ms): 2.960371 ; 	transfer rate (MB/s): 5066.93
+Record size (samples): 10000000 ; 	readout time (ms): 3.957681 ; 	transfer rate (MB/s): 5053.46
+Record size (samples): 15000000 ; 	readout time (ms): 5.320316 ; 	transfer rate (MB/s): 5638.76
+Record size (samples): 20000000 ; 	readout time (ms): 7.329609 ; 	transfer rate (MB/s): 5457.32
+Record size (samples): 30000000 ; 	readout time (ms): 10.861199 ; 	transfer rate (MB/s): 5524.25
+Record size (samples): 40000000 ; 	readout time (ms): 14.419288 ; 	transfer rate (MB/s): 5548.12
+Record size (samples): 50000000 ; 	readout time (ms): 17.679721 ; 	transfer rate (MB/s): 5656.20

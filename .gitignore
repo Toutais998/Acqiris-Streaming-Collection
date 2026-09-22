@@ -1,0 +1,16 @@
+# Visual Studio and generated build output
+.vs/
+**/x64/
+**/Debug/
+**/Release/
+*.user
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.tlog/
+*.ipch
+
+# Local acquisition output
+*.dat
+*.bin
