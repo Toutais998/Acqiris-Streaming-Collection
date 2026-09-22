@@ -1,0 +1,183 @@
+真实SA230P测试配置及MATLAB结果；2026-09-22。原始数据保留在D盘。
+FILE BNU_Mark25_Streaming_0922_170329.dat
+{
+"status":"complete",
+"dataSaved":true,
+"sampleRate":1000000000,
+"recordSize":6144000,
+"linePeriod":0.006828,
+"pixelPeriod":1.2e-05,
+"pixelsPerLine":512,
+"linesPerFrame":512,
+"requestedFrames":1,
+"completedRecords":512,
+"completedFrames":1,
+"fetchedBytes":6291456000,
+"writtenBytes":6291456000,
+"elapsedSeconds":3.5046618,
+"flushSeconds":0.7850253,
+"poolWaitMs":0.1342,
+"maxPoolWaitMs":0.0006,
+"writeMs":1323.427,
+"maxWriteMs":5.4941,
+"fetchMs":1015.3451,
+"maxFetchMs":2.1486,
+"queueHighWater":1,
+"maxRemainingElements":0,
+"maxMarkerRemaining":0,
+"maxFirstElement":8
+}
+FILE BNU_Mark25_Streaming_0922_171533.dat
+{
+"status":"complete",
+"dataSaved":true,
+"sampleRate":1000000000,
+"recordSize":6144000,
+"linePeriod":0.006828,
+"pixelPeriod":1.2e-05,
+"pixelsPerLine":512,
+"linesPerFrame":512,
+"requestedFrames":4,
+"completedRecords":2048,
+"completedFrames":4,
+"fetchedBytes":25165824000,
+"writtenBytes":25165824000,
+"elapsedSeconds":13.9913647,
+"flushSeconds":1.0195659,
+"poolWaitMs":303.481199999997,
+"maxPoolWaitMs":104.537,
+"writeMs":5606.2368,
+"maxWriteMs":142.147,
+"fetchMs":4064.152,
+"maxFetchMs":2.2224,
+"queueHighWater":7,
+"maxRemainingElements":52396032,
+"maxMarkerRemaining":256,
+"maxFirstElement":8
+}
+FILE BNU_Mark25_Streaming_0922_172010.dat
+{
+"status":"complete",
+"dataSaved":true,
+"sampleRate":1000000000,
+"recordSize":6144000,
+"linePeriod":0.006828,
+"pixelPeriod":1.2e-05,
+"pixelsPerLine":512,
+"linesPerFrame":512,
+"requestedFrames":24,
+"completedRecords":12288,
+"completedFrames":24,
+"fetchedBytes":150994944000,
+"writtenBytes":150994944000,
+"elapsedSeconds":83.9294539,
+"flushSeconds":0.9850691,
+"poolWaitMs":214.233000000097,
+"maxPoolWaitMs":136.4292,
+"writeMs":36643.2426000002,
+"maxWriteMs":189.0661,
+"fetchMs":24348.4493000001,
+"maxFetchMs":3.2147,
+"queueHighWater":7,
+"maxRemainingElements":63328256,
+"maxMarkerRemaining":304,
+"maxFirstElement":8
+}
+[
+  {
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "fileBytes": 1.50994944E+11,
+    "availableFrames": 24,
+    "frameIndices": [
+      1,
+      12,
+      24
+    ],
+    "reconstructionSeconds": 18.3316626,
+    "frameStats": {
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "frameIndex": 1,
+      "imageSize": [
+        512,
+        512
+      ],
+      "meanCode": -19701.450930895175,
+      "stdCode": 1148.4080965644625,
+      "minPixelCode": -21460.278,
+      "maxPixelCode": -17951.98,
+      "rawMinimum": -32768,
+      "rawMaximum": -6601,
+      "lowRailFraction": 1.3987223307291666E-8,
+      "highRailFraction": 0,
+      "estimatedFrequencyHz": 100000,
+      "cyclesPerPixel": 1.2,
+      "markerMinInterval": 0.006828044,
+      "markerMaxInterval": 0.007828056,
+      "markerUnusualIntervals": 1
+    }
+  },
+  {
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "fileBytes": 1.50994944E+11,
+    "availableFrames": 24,
+    "frameIndices": [
+      1,
+      12,
+      24
+    ],
+    "reconstructionSeconds": 18.3316626,
+    "frameStats": {
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "frameIndex": 12,
+      "imageSize": [
+        512,
+        512
+      ],
+      "meanCode": -19704.898133964856,
+      "stdCode": 1142.5578887347026,
+      "minPixelCode": -21453.853166666668,
+      "maxPixelCode": -17962.914083333333,
+      "rawMinimum": -32692,
+      "rawMaximum": -6667,
+      "lowRailFraction": 0,
+      "highRailFraction": 0,
+      "estimatedFrequencyHz": 100000,
+      "cyclesPerPixel": 1.2,
+      "markerMinInterval": 0.006828036,
+      "markerMaxInterval": 0.007828048,
+      "markerUnusualIntervals": 1
+    }
+  },
+  {
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "fileBytes": 1.50994944E+11,
+    "availableFrames": 24,
+    "frameIndices": [
+      1,
+      12,
+      24
+    ],
+    "reconstructionSeconds": 18.3316626,
+    "frameStats": {
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "frameIndex": 24,
+      "imageSize": [
+        512,
+        512
+      ],
+      "meanCode": -19710.817017148969,
+      "stdCode": 1140.4069663471228,
+      "minPixelCode": -21461.831083333334,
+      "maxPixelCode": -17974.7565,
+      "rawMinimum": -32684,
+      "rawMaximum": -6710,
+      "lowRailFraction": 0,
+      "highRailFraction": 0,
+      "estimatedFrequencyHz": 100000,
+      "cyclesPerPixel": 1.2,
+      "markerMinInterval": 0.006828028,
+      "markerMaxInterval": 0.007828044,
+      "markerUnusualIntervals": 1
+    }
+  }
+]

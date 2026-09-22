@@ -6,7 +6,7 @@ This directory contains the active SA230P IVI-C AqMD3 triggered-streaming exampl
 
 ## Acquisition contract
 
-The XY galvo emits one approximately 9,104 microsecond line period at about 109.8 Hz. The forward scan occupies 90% of the period. The example uses the rising edge of `External1`, 1 GS/s, a nominal 32 ns dead-time assumption, and an 8,193.6 microsecond active window. The deadTime constant does not configure hardware and was not measured by these tests. The 2.5 MHz pixel/40 clock is a synchronization reference, not the record trigger.
+The current test configuration uses a 6,828 microsecond line period at about 146.45 Hz. The requested pixel time is 12 microseconds, so each 512-pixel record is 6,144,000 samples (6.144 ms); this deliberately differs from the 90% period calculation (6,145,200 samples at 1 GS/s) by 1.2 microseconds. The rising edge of `External1` remains the line trigger. The nominal 32 ns dead-time constant does not configure hardware. The 2.5 MHz pixel/40 clock remains a synchronization reference, not the record trigger.
 
 ## Known constraints and issues
 
@@ -18,7 +18,7 @@ The XY galvo emits one approximately 9,104 microsecond line period at about 109.
 
 ## Change requirements
 
-For one complete image, use `--frame`: 512 complete records, default 8,193,600 samples/line, asynchronous disk writer, and a 10-second timeout. The raw file remains headerless int16; `.dat.markers.csv` stores timing separately. MATLAB must bin fractional samples-per-pixel using boundaries (16,003.125 average), not reshape into equal integer bins. See `../Matlab/FRAME_RECONSTRUCTION.md` for the latest end-to-end real-card result.
+For one complete image, use `--frame`: 512 complete records, currently 6,144,000 samples/line, asynchronous disk writer, and a timeout. For repeated frames use `--frames N`; it performs a disk-space check, writes `.config.json` and `.markers.csv`, and reports queue and write timing. The raw file remains headerless int16. MATLAB reads the record parameters from `.config.json`; for the current 12 microsecond pixel time it can reshape 12,000 samples/pixel. See `../Matlab/FRAME_RECONSTRUCTION_146P5.md`.
 
 Read `HANDOFF.md` and `DIAGNOSTIC_RESULTS.txt` for the real-card tests. Unconditional `sleep_for(1us)` caused millisecond host stalls and stream backlog. Use marker timestamps to distinguish accepted triggers from host readout rate. Never assume `firstElement` is zero (8 was observed). The `--diag samples records legacySleep disk` mode explicitly consumes without saving when disk=0; it is not a production acquisition. Record size must be a multiple of 64 for this card. Voltage conversion is nonlinear for the user's source; use measured 50 ohm levels.
 

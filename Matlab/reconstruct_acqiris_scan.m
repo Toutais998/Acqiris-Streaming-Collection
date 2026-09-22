@@ -1,103 +1,145 @@
-%% Acqiris整帧重建：纯int16、小端、无头，每行8193600点
-% 中文：ACQ_DATA_FILE可指定输入，否则选择最新文件。逐行读取，不整体加载8GB。
+%% Acqiris单帧/多帧重建：从配置侧文件读取窗口，逐行处理，不整体加载原始文件
+% 中文：ACQ_DATA_FILE指定输入；ACQ_FRAME_INDICES为逗号分隔帧号，空或all表示全部。
 clear; clc;
 dataFolder = 'D:\Acq_Storage';
-sampleRate = 1e9;
-linePeriod = 9104e-6;
-lineRate = 1/linePeriod;
-activeDuty = 0.9;
-pixelsPerLine = 512;
-linesPerFrame = 512;
-frameRate = lineRate/linesPerFrame;
-activeLineSamples = round(linePeriod*activeDuty*sampleRate);
-samplesPerPixel = activeLineSamples/pixelsPerLine;
-% 中文：16003.125点/像素不能reshape；边界分箱覆盖所有样本，不补零、不丢点。
-pixelEdges = round(linspace(0,activeLineSamples,pixelsPerLine+1));
-pixelCounts = diff(pixelEdges);
-assert(sum(pixelCounts)==activeLineSamples && all(pixelCounts>0));
 dataFile = getenv('ACQ_DATA_FILE');
 if isempty(dataFile)
     files = dir(fullfile(dataFolder,'BNU_Mark25_Streaming_*.dat'));
-    assert(~isempty(files),'未找到采集dat文件');
-    [~,newest] = max([files.datenum]);
-    dataFile = fullfile(files(newest).folder,files(newest).name);
-end
-info = dir(dataFile);
-assert(isscalar(info),'数据文件不存在');
-assert(mod(info.bytes,activeLineSamples*2)==0,'文件末尾不是完整record');
-availableLines = info.bytes/(activeLineSamples*2);
-assert(availableLines>=linesPerFrame,'文件不足512条完整line');
-frameIndex = 1;
-fid = fopen(dataFile,'rb','ieee-le');
-assert(fid>=0,'不能打开数据文件');
-cleanup = onCleanup(@() fclose(fid));
-image = zeros(linesPerFrame,pixelsPerLine);
-rawMinimum = inf; rawMaximum = -inf;
-lowRailCount = 0; highRailCount = 0;
-fprintf('INPUT %s\n',dataFile);
-for line = 1:linesPerFrame
-    raw = fread(fid,activeLineSamples,'int16=>double');
-    assert(numel(raw)==activeLineSamples,'record数据不完整');
-    sums = [0;cumsum(raw)];
-    image(line,:) = (diff(sums(pixelEdges+1))./pixelCounts(:)).';
-    rawMinimum = min(rawMinimum,min(raw)); rawMaximum = max(rawMaximum,max(raw));
-    lowRailCount = lowRailCount+nnz(raw==-32768);
-    highRailCount = highRailCount+nnz(raw==32767);
-    if line==1
-        waveform = raw(1:8000);
-        probe = raw(1:min(1000000,numel(raw)));
-        sorted = sort(probe);
-        lowLevelCode = median(sorted(1:floor(end/4)));
-        highLevelCode = median(sorted(ceil(3*end/4):end));
-        threshold = (lowLevelCode+highLevelCode)/2;
-        rising = find(diff(probe>threshold)==1);
-        if numel(rising)>2
-            measuredFrequency = sampleRate/median(diff(rising));
-        else
-            measuredFrequency = NaN;
+    [~,order] = sort([files.datenum],'descend');
+    for k=order
+        candidate = fullfile(files(k).folder,files(k).name);
+        configFile = [candidate '.config.json'];
+        if isfile(configFile)
+            c = jsondecode(fileread(configFile));
+            if ~strcmp(c.status,'complete') || ~c.dataSaved, continue; end
         end
+        if files(k).bytes==0, continue; end
+        dataFile = candidate; break;
     end
 end
+assert(~isempty(dataFile),'没有完整采集文件');
+% 中文：兼容旧9104us文件；新版优先读取真实记录配置，禁止按新窗口误读旧文件。
+sampleRate = 1e9; linePeriod = 9104e-6; activeDuty = 0.9;
+pixelsPerLine = 512; linesPerFrame = 512;
+activeLineSamples = round(linePeriod*activeDuty*sampleRate);
+config = struct;
+if isfile([dataFile '.config.json'])
+    config = jsondecode(fileread([dataFile '.config.json']));
+    assert(strcmp(config.status,'complete') && config.dataSaved,'失败或不落盘诊断不能重建为完整采集');
+    sampleRate = config.sampleRate; linePeriod = config.linePeriod;
+    activeLineSamples = config.recordSize;
+    pixelsPerLine = config.pixelsPerLine; linesPerFrame = config.linesPerFrame;
+    activeDuty = activeLineSamples/sampleRate/linePeriod;
+end
+lineRate = 1/linePeriod; frameRate = lineRate/linesPerFrame;
+samplesPerPixel = activeLineSamples/pixelsPerLine;
+pixelEdges = round(linspace(0,activeLineSamples,pixelsPerLine+1));
+pixelCounts = diff(pixelEdges);
+info = dir(dataFile);
+assert(isscalar(info) && mod(info.bytes,activeLineSamples*2)==0,'文件不是完整记录');
+availableLines = info.bytes/(activeLineSamples*2);
+availableFrames = floor(availableLines/linesPerFrame);
+assert(availableFrames>=1,'文件不足一帧');
+selection = getenv('ACQ_FRAME_INDICES');
+if isempty(selection) || strcmpi(selection,'all')
+    frameIndices = 1:availableFrames;
+else
+    frameIndices = str2double(strsplit(selection,','));
+    assert(all(isfinite(frameIndices) & frameIndices>=1 & frameIndices<=availableFrames & frameIndices==floor(frameIndices)));
+end
+markers = table;
+if isfile([dataFile '.markers.csv'])
+    markers = readtable([dataFile '.markers.csv']);
+    assert(height(markers)==availableLines,'marker与文件行数不符');
+    assert(all(mod(diff(markers.record_index),2^24)==1),'marker索引不连续');
+end
+fid = fopen(dataFile,'rb','ieee-le');
+assert(fid>=0); cleanup = onCleanup(@() fclose(fid));
+images = zeros(linesPerFrame,pixelsPerLine,numel(frameIndices),'single');
+frameStats = cell(1,numel(frameIndices));
+waveform = [];
+fprintf('INPUT %s | available_frames=%d | selected=%d | record=%d\n',dataFile,availableFrames,numel(frameIndices),activeLineSamples);
+startTime = tic;
+for fi = 1:numel(frameIndices)
+    frameIndex = frameIndices(fi);
+    assert(fseek(fid,(frameIndex-1)*linesPerFrame*activeLineSamples*2,'bof')==0);
+    image = zeros(linesPerFrame,pixelsPerLine);
+    rawMinimum = inf; rawMaximum = -inf; lowRailCount = 0; highRailCount = 0;
+    for line = 1:linesPerFrame
+        raw = fread(fid,activeLineSamples,'*int16');
+        assert(numel(raw)==activeLineSamples,'不完整record');
+        if samplesPerPixel==floor(samplesPerPixel)
+            % 中文：新配置每像素12000点可直接分箱，省去大型double前缀和。
+            image(line,:) = mean(reshape(raw,samplesPerPixel,pixelsPerLine),1);
+        else
+            sums = [0;cumsum(double(raw))];
+            image(line,:) = (diff(sums(pixelEdges+1))./pixelCounts(:)).';
+        end
+        rawMinimum = min(rawMinimum,double(min(raw))); rawMaximum = max(rawMaximum,double(max(raw)));
+        lowRailCount = lowRailCount+nnz(raw==-32768); highRailCount = highRailCount+nnz(raw==32767);
+        if line==1
+            probe = double(raw(1:min(1000000,numel(raw))));
+            sorted = sort(probe);
+            lowLevelCode = median(sorted(1:floor(end/4)));
+            highLevelCode = median(sorted(ceil(3*end/4):end));
+            % 中文：迟滞交越排除慢斜坡上的噪声重复穿越，避免100kHz误报200kHz。
+            lower = lowLevelCode+0.35*(highLevelCode-lowLevelCode);
+            upper = lowLevelCode+0.65*(highLevelCode-lowLevelCode);
+            highEvents = find(diff(probe>upper)==1);
+            lowEvents = find(diff(probe<lower)==1);
+            events = [highEvents;lowEvents]; labels = [ones(size(highEvents));zeros(size(lowEvents))];
+            [events,order] = sort(events); labels = labels(order);
+            rising = events(labels==1 & [true;diff(labels)~=0]);
+            periods = diff(rising);
+            measuredFrequency = sampleRate/median(periods);
+            if fi==1, waveform = probe(1:min(100000,numel(probe))); end
+        end
+    end
+    stats = struct('inputFile',dataFile,'frameIndex',frameIndex,'imageSize',size(image), ...
+        'meanCode',mean(image(:)),'stdCode',std(image(:)), ...
+        'minPixelCode',min(image(:)),'maxPixelCode',max(image(:)), ...
+        'rawMinimum',rawMinimum,'rawMaximum',rawMaximum, ...
+        'lowRailFraction',lowRailCount/(activeLineSamples*linesPerFrame), ...
+        'highRailFraction',highRailCount/(activeLineSamples*linesPerFrame), ...
+        'estimatedFrequencyHz',measuredFrequency,'cyclesPerPixel',samplesPerPixel/sampleRate*measuredFrequency);
+    if ~isempty(markers)
+        rows = (frameIndex-1)*linesPerFrame+(1:linesPerFrame);
+        delta = markers.interval_s(rows(2:end));
+        stats.markerMinInterval = min(delta); stats.markerMaxInterval = max(delta);
+        stats.markerUnusualIntervals = nnz(abs(delta-linePeriod)>linePeriod*0.01);
+    end
+    images(:,:,fi) = single(image); frameStats{fi} = stats;
+    [folder,stem] = fileparts(dataFile);
+    base = fullfile(folder,sprintf('%s_frame%04d',stem,frameIndex));
+    imwrite(uint16(round(image+32768)),[base '.png']);
+    save([base '.mat'],'image','stats','config','sampleRate','linePeriod','lineRate','frameRate', ...
+        'activeLineSamples','samplesPerPixel','pixelEdges','pixelCounts','activeDuty','pixelsPerLine','linesPerFrame');
+    jf = fopen([base '_summary.json'],'w','n','UTF-8');
+    assert(jf>=0); fprintf(jf,'%s\n',jsonencode(stats,PrettyPrint=true)); fclose(jf);
+    fprintf('FRAME_RESULT %s\n',jsonencode(stats));
+end
 clear cleanup;
-markerFile = [dataFile '.markers.csv'];
-markers = table();
-if isfile(markerFile)
-    markers = readtable(markerFile);
-    assert(height(markers)>=512 && all(diff(markers.record_index(1:512))==1),'marker索引不连续');
+% 中文：多帧增强统一使用同一色标，避免每帧自动拉伸掩盖帧间变化。
+lo = double(min(images(:))); hi = double(max(images(:)));
+for fi=1:numel(frameIndices)
+    enhanced = (double(images(:,:,fi))-lo)/max(hi-lo,eps);
+    imwrite(uint16(round(enhanced*65535)),fullfile(folder,sprintf('%s_frame%04d_contrast.png',stem,frameIndices(fi))));
 end
-stats = struct('inputFile',dataFile,'fileBytes',info.bytes,'availableLines',availableLines, ...
-    'imageSize',size(image),'rawMinimum',rawMinimum,'rawMaximum',rawMaximum, ...
-    'meanCode',mean(image(:)),'stdCode',std(image(:)),'minPixelCode',min(image(:)), ...
-    'maxPixelCode',max(image(:)),'lowLevelCode',lowLevelCode,'highLevelCode',highLevelCode, ...
-    'lowRailFraction',lowRailCount/(activeLineSamples*512), ...
-    'highRailFraction',highRailCount/(activeLineSamples*512), ...
-    'estimatedFrequencyHz',measuredFrequency,'cyclesPerPixelAt2_5MHz',samplesPerPixel/sampleRate*2.5e6);
-if ~isempty(markers)
-    stats.markerMinInterval = min(markers.interval_s(2:512));
-    stats.markerMaxInterval = max(markers.interval_s(2:512));
-    stats.markerUnusualIntervals = nnz(abs(markers.interval_s(2:512)-linePeriod)>linePeriod*0.01);
-end
-[outputFolder,stem] = fileparts(dataFile);
-base = fullfile(outputFolder,[stem '_frame0001']);
-% 中文：原图使用固定ADC满量程灰度；自动对比度增强图单独输出，不代表真实幅度变化很大。
-imwrite(uint16(round(image+32768)),[base '.png']);
-span = max(image(:))-min(image(:));
-enhanced = (image-min(image(:)))/max(span,eps);
-imwrite(uint16(round(enhanced*65535)),[base '_contrast.png']);
-save([base '.mat'],'image','stats','markers','sampleRate','lineRate','linePeriod', ...
-    'activeDuty','pixelsPerLine','linesPerFrame','frameRate','activeLineSamples', ...
-    'samplesPerPixel','pixelEdges','pixelCounts','waveform');
-fig = figure('Visible','off','Color','w','Position',[100 100 1500 480]);
+baseAll = fullfile(folder,[stem '_multiframe']);
+save([baseAll '.mat'],'images','frameStats','frameIndices','markers','config','waveform','sampleRate','linePeriod','samplesPerPixel');
+fig = figure('Visible','off','Color','w','Position',[50 50 1500 520]);
 tiledlayout(1,3);
-nexttile; imagesc(image,[-32768 32767]); axis image; colormap gray; colorbar;
-title('512 x 512 | fixed ADC scale'); xlabel('X pixel'); ylabel('Y line');
-nexttile; imagesc(image); axis image; colorbar;
-title('Auto contrast (small variations amplified)'); xlabel('X pixel'); ylabel('Y line');
-nexttile; plot((0:numel(waveform)-1)/sampleRate*1e6,waveform);
-xlim([0 3]); xlabel('Time (us)'); ylabel('ADC code'); grid on;
-title(sprintf('Raw waveform | estimated %.4f MHz',measuredFrequency/1e6));
-exportgraphics(fig,[base '_preview.png'],'Resolution',150); close(fig);
-jsonFile = fopen([base '_summary.json'],'w','n','UTF-8');
-assert(jsonFile>=0); fprintf(jsonFile,'%s\n',jsonencode(stats,PrettyPrint=true)); fclose(jsonFile);
-fprintf('RECONSTRUCTION_RESULT %s\n',jsonencode(stats));
-fprintf('OUTPUT_BASE %s\n',base);
+nexttile; imagesc(images(:,:,1),[lo max(hi,lo+eps)]); axis image; colormap gray; colorbar;
+title(sprintf('Frame %d | common enhanced scale',frameIndices(1)));
+nexttile; imagesc(images(:,:,end),[lo max(hi,lo+eps)]); axis image; colorbar;
+title(sprintf('Frame %d | common enhanced scale',frameIndices(end)));
+nexttile; plot((0:numel(waveform)-1)/sampleRate*1e6,waveform); grid on;
+    xlim([0 min(100,5e6/max(frameStats{1}.estimatedFrequencyHz,1))]);
+xlabel('Time (us)'); ylabel('ADC code');
+title(sprintf('Raw waveform | %.4f kHz',frameStats{1}.estimatedFrequencyHz/1e3));
+exportgraphics(fig,[baseAll '_preview.png'],'Resolution',120); close(fig);
+summary = struct('inputFile',dataFile,'fileBytes',info.bytes,'availableFrames',availableFrames, ...
+    'frameIndices',frameIndices,'reconstructionSeconds',toc(startTime),'frameStats',frameStats);
+jf = fopen([baseAll '_summary.json'],'w','n','UTF-8');
+assert(jf>=0); fprintf(jf,'%s\n',jsonencode(summary,PrettyPrint=true)); fclose(jf);
+fprintf('MULTIFRAME_RESULT frames=%d seconds=%.3f output=%s\n',numel(frameIndices),toc(startTime),baseAll);

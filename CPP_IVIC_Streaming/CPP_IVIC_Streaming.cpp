@@ -33,6 +33,9 @@ using std::this_thread::sleep_until;
 #include <functional>
 #include <mutex>
 #include <queue>
+#define NOMINMAX
+#include <Windows.h> // 中文：用Win32查询剩余空间，兼容当前Release的C++标准。
+#include <io.h> // 中文：_commit在测试结束时把文件刷新到系统存储层。
 
 // 宏定义，用于检测API调用结果
 #define checkApiCall(f)     \
@@ -87,6 +90,9 @@ std::condition_variable g_dataCondVar;
 
 std::atomic<bool> g_acquisitionFinished;
 std::atomic<bool> g_writeFailed{false};
+std::atomic<uint64_t> g_writtenBytes{0};
+double g_writeMs=0, g_maxWriteMs=0; // 中文：仅写线程修改，join后读取。
+ViInt64 g_markerRemainingMax=0;
 
 // 命名空间内定义配置参数
 namespace
@@ -101,13 +107,13 @@ namespace
     ViReal64 const sampleRate = 1.0e9;                // 采样率 1 GS/s，最大4
     ViReal64 const sampleInterval = 1.0 / sampleRate; // 采样间隔
     // XY 双振镜扫描：每个 line 的上升沿启动一条 record。
-    // line 周期 9104 us、有效占空比 0.9，因此有效采集窗口约 8193.6 us。
-    // 记录长度按采样率换算，取整后为 8,193,600 samples（512 个像素 line）。
-    ViReal64 const linePeriod = 9104e-6; // 这里去把Scanimage的line Peroid填过来
+    // 中文：新line周期6828us；按用户明确的12us/像素取512×12=6144us。
+    // 90%理论为6145.2us，二者相差1.2us；此处优先保持准确像素时间。
+    ViReal64 const linePeriod = 6828e-6;
     ViReal64 const lineActiveDuty = 0.9;
     ViInt64 const pixelsPerLine = 512; // 每行像素数
-    ViReal64 const activeLineDuration = linePeriod * lineActiveDuty;
-    ViReal64 const pixelPeriod = activeLineDuration / pixelsPerLine;
+    ViReal64 const pixelPeriod = 12000e-9;
+    ViReal64 const activeLineDuration = pixelPeriod * pixelsPerLine;
     ViInt64 const recordSize = static_cast<ViInt64>(
         std::llround(activeLineDuration * sampleRate));
     ViReal64 const deadTime = 32e-9; // 中文：契约假定32ns，仅参与计算；未设置驱动，也不是本次实测值。
@@ -192,7 +198,11 @@ void fileWriter(FILE *outputFile, size_t &totalDataWritten)
 
         if (chunk.validBytes > 0)
         {
+            auto writeStart=std::chrono::steady_clock::now();
             size_t written=fwrite(chunk.buffer.data()+chunk.offsetBytes, 1, chunk.validBytes, outputFile);
+            double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-writeStart).count();
+            g_writeMs+=ms; g_maxWriteMs=std::max(g_maxWriteMs,ms);
+            g_writtenBytes+=written;
             totalDataWritten += written;
             if(written!=chunk.validBytes) g_writeFailed=true; // 中文：短写必须可见，不能报告为成功。
 
@@ -296,18 +306,38 @@ void Diagnose(ViSession session, ViInt64 samples, int target, bool legacySleep,
 
 int main(int argc, char** argv)
 {
-    bool frameMode=argc==2 && std::string(argv[1])=="--frame"; // 中文：完整帧固定512条line，窗口仍为8193.6us。
+    bool frameMode=argc==2 && std::string(argv[1])=="--frame";
+    int64_t requestedFrames=frameMode ? 1 : 0;
+    bool discard=false;
+    if(argc>=3 && std::string(argv[1])=="--frames")
+    {
+        try { requestedFrames=std::stoll(argv[2]); } catch(...) { return 2; }
+        if(requestedFrames<1 || requestedFrames>100000 || argc>4) return 2;
+        if(argc==4) { if(std::string(argv[3])!="--discard") return 2; discard=true; }
+        frameMode=true;
+    }
+    int64_t targetRecords=requestedFrames*512;
     bool diagnostic=argc>1 && std::string(argv[1])=="--diag";
     ViInt64 recordSize=::recordSize;
     int target=10; bool legacySleep=false, diagnosticDisk=false;
     if(argc>1 && !frameMode)
     {
-        if(!diagnostic || argc!=6) { cerr << "Usage: --frame OR --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
+        if(!diagnostic || argc!=6) { cerr << "Usage: --frame OR --frames N [--discard] OR --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
         try { recordSize=std::stoll(argv[2]); target=std::stoi(argv[3]); legacySleep=std::stoi(argv[4])!=0; diagnosticDisk=std::stoi(argv[5])!=0; }
         catch(...) { return 2; }
         if(recordSize<1024 || recordSize>8193600 || recordSize%64 || target<1 || target>600) return 2;
     }
     cout << "Triggered Streaming \n\n";
+    if(frameMode && !discard)
+    {
+        ULARGE_INTEGER freeBytes{};
+        bool spaceOk=GetDiskFreeSpaceExA("D:\\Acq_Storage",&freeBytes,nullptr,nullptr)!=0;
+        uint64_t need=uint64_t(targetRecords)*recordSize*2;
+        // 中文：采集前检查总文件容量，留20GiB；不扩大8块内存池。
+        if(!spaceOk || freeBytes.QuadPart<need+20ull*1024*1024*1024)
+        { cerr << "Insufficient disk space for requested frames plus 20 GiB reserve\n"; return 2; }
+        cout << "SPACE_CHECK needed_bytes=" << need << " available_bytes=" << freeBytes.QuadPart << '\n';
+    }
 
     // --- 添加文件输出逻辑 ---
     std::time_t now = std::time(nullptr);
@@ -317,17 +347,17 @@ int main(int argc, char** argv)
                   tm_now); // 格式化为"月日_时分"
     std::string const outputFileName(
         "D:\\Acq_Storage\\BNU_Mark25_Streaming_" +
-        std::string(dateSuffix) + ".dat");
+        std::string(dateSuffix) + (discard ? "_discard.dat" : ".dat"));
 
     // 打开输出文件 - 改用C风格I/O以提升性能
-    FILE *outputFile = fopen(diagnostic && !diagnosticDisk ? "NUL" : outputFileName.c_str(), "wb");
+    FILE *outputFile = fopen(discard || (diagnostic && !diagnosticDisk) ? "NUL" : outputFileName.c_str(), "wb");
     if (outputFile == nullptr)
     {
         std::cerr << "错误: 无法打开输出文件！ -> " << outputFileName << std::endl;
         return 1;
     }
 
-    cout << "Output: " << (diagnostic && !diagnosticDisk ? "NONE (diagnostic)" : outputFileName) << "\n\n";
+    cout << "Output: " << (discard || (diagnostic && !diagnosticDisk) ? "NONE (explicit diagnostic discard)" : outputFileName) << "\n\n";
 
     // --- 移除单体内存缓冲区 ---
     size_t totalDataWritten = 0;
@@ -340,6 +370,49 @@ int main(int argc, char** argv)
     // 触发计数器
     int64_t totalTriggers = 0;
     std::thread writerThread; // 在try块外部声明线程对象，以确保在catch块中可访问
+    using Clock=std::chrono::steady_clock;
+    Clock::time_point acquisitionStartTime{};
+    bool started=false;
+    double actualSeconds=0, flushSeconds=0, poolWaitMs=0, maxPoolWaitMs=0, fetchMs=0, maxFetchMs=0;
+    ViInt64 fetchedBytes=0, maxFirstElement=0, maxRemaining=0;
+    size_t queueHighWater=0;
+    std::vector<LibTool::TriggerMarker> frameMarkers;
+    // 中文：成功/失败都保存配置和性能，避免长采集失败后丢失定位信息。
+    auto saveReport=[&](bool complete)
+    {
+        std::ofstream report(outputFileName+".config.json");
+        report << std::setprecision(15) << "{\n\"status\":\"" << (complete ? "complete" : "failed")
+            << "\",\n\"dataSaved\":" << (discard ? "false" : "true")
+            << ",\n\"sampleRate\":" << sampleRate << ",\n\"recordSize\":" << recordSize
+            << ",\n\"linePeriod\":" << linePeriod << ",\n\"pixelPeriod\":" << pixelPeriod
+            << ",\n\"pixelsPerLine\":512,\n\"linesPerFrame\":512,\n\"requestedFrames\":" << requestedFrames
+            << ",\n\"completedRecords\":" << totalTriggers << ",\n\"completedFrames\":" << totalTriggers/512
+            << ",\n\"fetchedBytes\":" << fetchedBytes << ",\n\"writtenBytes\":" << (discard ? 0 : totalDataWritten)
+            << ",\n\"elapsedSeconds\":" << actualSeconds << ",\n\"flushSeconds\":" << flushSeconds
+            << ",\n\"poolWaitMs\":" << poolWaitMs << ",\n\"maxPoolWaitMs\":" << maxPoolWaitMs
+            << ",\n\"writeMs\":" << g_writeMs << ",\n\"maxWriteMs\":" << g_maxWriteMs
+            << ",\n\"fetchMs\":" << fetchMs << ",\n\"maxFetchMs\":" << maxFetchMs
+            << ",\n\"queueHighWater\":" << queueHighWater << ",\n\"maxRemainingElements\":" << maxRemaining
+            << ",\n\"maxMarkerRemaining\":" << g_markerRemainingMax
+            << ",\n\"maxFirstElement\":" << maxFirstElement << "\n}\n";
+        report.close();
+        std::ofstream metadata(outputFileName+".markers.csv");
+        metadata << "line,record_index,timestamp_s,interval_s\n" << std::setprecision(15);
+        // 中文：SA230P时间戳250ps，仅写已成功取样的marker。
+        for(size_t i=0;i<size_t(totalTriggers) && i<frameMarkers.size();++i)
+            metadata << i+1 << ',' << frameMarkers[i].recordIndex << ','
+                     << frameMarkers[i].GetInitialXTime(250e-12) << ','
+                     << (i ? (frameMarkers[i].absoluteSampleIndex-frameMarkers[i-1].absoluteSampleIndex)*250e-12 : 0) << '\n';
+        metadata.close();
+        cout << std::dec << "PERF_RESULT status=" << (complete?"complete":"failed") << " records=" << totalTriggers
+             << " frames=" << totalTriggers/512 << " elapsed_s=" << actualSeconds << " flush_s=" << flushSeconds
+             << " pool_wait_ms=" << poolWaitMs << " max_pool_wait_ms=" << maxPoolWaitMs
+             << " write_ms=" << g_writeMs << " max_write_ms=" << g_maxWriteMs
+             << " fetch_ms=" << fetchMs << " max_fetch_ms=" << maxFetchMs
+             << " queue_high=" << queueHighWater << " max_remaining=" << maxRemaining
+             << " saved_bytes=" << (discard?0:totalDataWritten) << " config=" << outputFileName << ".config.json\n";
+        if(!report || !metadata) throw runtime_error("Report/marker write failed");
+    };
 
     try
     {
@@ -492,15 +565,12 @@ int main(int argc, char** argv)
         cout << "Acquisition is running\n\n";
 
         // 计算采集结束时间点
-        auto const endTime = std::chrono::steady_clock::now() + (frameMode ? seconds(10) : streamingDuration);
-        std::chrono::steady_clock::time_point acquisitionStartTime =
-            std::chrono::steady_clock::now();
+        auto const endTime = Clock::now() + (frameMode ? seconds(int64_t(std::ceil(targetRecords*linePeriod))+10) : streamingDuration);
+        acquisitionStartTime = Clock::now(); started=true;
 
         // 采集循环，持续到采集时长结束
-        ViInt64 fetchedBytes=0, maxFirstElement=0, maxRemaining=0;
-        std::vector<LibTool::TriggerMarker> frameMarkers;
-        frameMarkers.reserve(512);
-        while (std::chrono::steady_clock::now() < endTime && (!frameMode || totalTriggers<512))
+        frameMarkers.reserve(size_t(frameMode ? std::min<int64_t>(targetRecords,65536) : 1024));
+        while (Clock::now() < endTime && (!frameMode || totalTriggers<targetRecords))
         {
             if(g_writeFailed) throw runtime_error("Disk short write");
             // 读取触发标记数据
@@ -521,10 +591,10 @@ int main(int argc, char** argv)
                 }
                 if(numAvailableRecords!=1 || markerArraySegment.Size()!=maxMarkerElements)
                     throw runtime_error("Unexpected marker count");
-                if(frameMode)
+                // 中文：所有正式模式都解码marker，持续检查记录索引。
                 {
                     auto marker=LibTool::StandardStreaming::DecodeTriggerMarker(markerArraySegment);
-                    if(!frameMarkers.empty() && marker.recordIndex!=frameMarkers.back().recordIndex+1)
+                    if(!frameMarkers.empty() && marker.recordIndex!=((frameMarkers.back().recordIndex+1)&LibTool::TriggerMarker::RecordIndexMask))
                         throw runtime_error("Frame marker index discontinuity");
                     frameMarkers.push_back(marker);
                 }
@@ -538,6 +608,7 @@ int main(int argc, char** argv)
                 // 2. 从内存池获取一个空闲缓冲区
                 std::vector<uint8_t> sampleChunk;
                 {
+                    auto waitStart=Clock::now();
                     std::unique_lock<std::mutex> lock(g_freeBufferMutex);
                     // 等待缓冲区可用，设置超时以防死锁
                     if (!g_freeBufferCondVar.wait_for(lock, std::chrono::seconds(2), []
@@ -548,6 +619,8 @@ int main(int argc, char** argv)
                     }
                     sampleChunk = std::move(g_freeBufferQueue.front());
                     g_freeBufferQueue.pop();
+                    double ms=std::chrono::duration<double,std::milli>(Clock::now()-waitStart).count();
+                    poolWaitMs+=ms; maxPoolWaitMs=std::max(maxPoolWaitMs,ms);
                 }
 
                 // 3. 直接将数据采集到池化的缓冲区中 (零拷贝)
@@ -560,9 +633,12 @@ int main(int argc, char** argv)
                 auto sampleDeadline=std::chrono::steady_clock::now()+seconds(2);
                 do
                 {
+                    auto fetchStart=Clock::now();
                     checkApiCall(AqMD3_StreamFetchDataInt32(
                         session, sampleStreamName, nbrElementsToFetch, bufferSizeInElements,
                         bufferData, &remainingElements, &actualElements, &firstElement));
+                    double ms=std::chrono::duration<double,std::milli>(Clock::now()-fetchStart).count();
+                    fetchMs+=ms; maxFetchMs=std::max(maxFetchMs,ms);
                     if(firstElement<0 || actualElements<0 || firstElement+actualElements>bufferSizeInElements)
                         throw runtime_error("Sample buffer bounds");
                     if(actualElements==0)
@@ -571,7 +647,12 @@ int main(int argc, char** argv)
                         std::this_thread::yield(); // 中文：保留当前marker，避免样本未到就错配下一条。
                     }
                 } while(actualElements==0);
-                if(actualElements!=nbrElementsToFetch) throw runtime_error("Partial record returned");
+                if(actualElements!=nbrElementsToFetch)
+                {
+                    cerr << std::dec << "PARTIAL_RECORD requested=" << nbrElementsToFetch << " actual=" << actualElements
+                         << " first=" << firstElement << " remaining=" << remainingElements << '\n';
+                    throw runtime_error("Partial record returned");
+                }
                 fetchedBytes+=actualElements*4;
                 maxFirstElement=std::max(maxFirstElement,firstElement);
                 maxRemaining=std::max(maxRemaining,remainingElements);
@@ -587,6 +668,7 @@ int main(int argc, char** argv)
                     {
                         std::lock_guard<std::mutex> lock(g_dataMutex);
                         g_dataQueue.push(std::move(chunk));
+                        queueHighWater=std::max(queueHighWater,g_dataQueue.size());
                     }
                     g_dataCondVar.notify_one();
                 }
@@ -598,6 +680,10 @@ int main(int argc, char** argv)
                 }
 
                 totalTriggers += numAvailableRecords;
+                if(totalTriggers%512==0)
+                    cout << std::dec << "FRAME_PROGRESS frames=" << totalTriggers/512
+                         << " seconds=" << std::chrono::duration<double>(Clock::now()-acquisitionStartTime).count()
+                         << " sink_bytes=" << g_writtenBytes.load() << " remaining=" << remainingElements << std::endl;
 
                 // --- 为避免性能影响，建议在高吞吐量测试时注释掉下面的输出 ---
                 // auto currentTime = std::chrono::steady_clock::now();
@@ -615,7 +701,7 @@ int main(int argc, char** argv)
             std::this_thread::yield(); // 中文：Windows微秒sleep实测可休眠约13ms，造成流式积压。
         }
 
-        double actualSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-acquisitionStartTime).count();
+        actualSeconds=std::chrono::duration<double>(Clock::now()-acquisitionStartTime).count();
         checkApiCall(AqMD3_Abort(session)); // 中文：先停卡再排空主机写队列，避免等待写盘时继续采集。
 
         // --- 等待写入线程处理完剩余数据 ---
@@ -625,22 +711,17 @@ int main(int argc, char** argv)
         if (writerThread.joinable())
             writerThread.join(); // 等待写入线程结束
 
+        auto flushStart=Clock::now();
         int flushResult=fflush(outputFile);
+        int commitResult=discard ? 0 : _commit(_fileno(outputFile));
         int closeResult=fclose(outputFile); outputFile=nullptr;
-        if(g_writeFailed || flushResult || closeResult) throw runtime_error("Disk write/flush/close failed");
+        flushSeconds=std::chrono::duration<double>(Clock::now()-flushStart).count();
+        if(g_writeFailed || flushResult || commitResult || closeResult) throw runtime_error("Disk write/flush/close failed");
         if(frameMode)
         {
-            if(totalTriggers!=512 || frameMarkers.size()!=512) throw runtime_error("Incomplete 512-line frame");
-            // 中文：原始dat仍为纯int16，独立CSV保存板卡时间戳以供重建校验。
-            std::ofstream metadata(outputFileName+".markers.csv");
-            metadata << "line,record_index,timestamp_s,interval_s\n" << std::setprecision(15);
-            for(size_t i=0;i<frameMarkers.size();++i)
-                metadata << i+1 << ',' << frameMarkers[i].recordIndex << ','
-                         << frameMarkers[i].GetInitialXTime(timestampPeriod) << ','
-                         << (i ? (frameMarkers[i].absoluteSampleIndex-frameMarkers[i-1].absoluteSampleIndex)*timestampPeriod : 0) << '\n';
-            metadata.close();
-            if(!metadata) throw runtime_error("Frame marker CSV write failed");
+            if(totalTriggers!=targetRecords || int64_t(frameMarkers.size())!=targetRecords) throw runtime_error("Incomplete requested frames");
         }
+        saveReport(true);
         cout << std::dec << "RUN_RESULT records=" << totalTriggers << " elapsed_s=" << actualSeconds
              << " fetched_bytes=" << fetchedBytes << " written_bytes=" << totalDataWritten
              << " max_first=" << maxFirstElement << " max_remaining=" << maxRemaining
@@ -664,6 +745,7 @@ int main(int argc, char** argv)
     catch (std::exception const &exc)
     {
         std::cerr << "Error: " << exc.what() << std::endl;
+        if(started) actualSeconds=std::chrono::duration<double>(Clock::now()-acquisitionStartTime).count();
         if(session!=VI_NULL) AqMD3_Abort(session);
 
         // 确保在异常情况下也能正确停止并加入后台线程
@@ -674,7 +756,13 @@ int main(int argc, char** argv)
             writerThread.join();
         }
 
-        if(outputFile) fclose(outputFile);
+        if(outputFile)
+        {
+            auto flushStart=Clock::now();
+            fflush(outputFile); if(!discard) _commit(_fileno(outputFile)); fclose(outputFile); outputFile=nullptr;
+            flushSeconds=std::chrono::duration<double>(Clock::now()-flushStart).count();
+        }
+        if(started) { try { saveReport(false); } catch(...) { cerr << "Failure report could not be saved\n"; } }
         if (session != VI_NULL) AqMD3_close(session);
         return 1;
     }
@@ -723,6 +811,7 @@ FetchAvailableElements(ViSession session, ViConstString streamName,
         session, streamName, nbrElementsToFetch, bufferSize,
         (ViInt32 *)bufferData, &remainingElements, &actualElements,
         &firstValidElement));
+    g_markerRemainingMax=std::max(g_markerRemainingMax,remainingElements);
     if ((actualElements == 0) && (remainingElements > 0))
     {
         if (nbrElementsToFetch <= remainingElements)

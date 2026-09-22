@@ -2,6 +2,8 @@
 
 最新进展：已新增--frame模式并真实采集512条，MATLAB2025成功重建512×512图像。参见 [整帧重建报告](../Matlab/FRAME_RECONSTRUCTION.md)。下方测试是先前诊断记录；D盘旧数据已由用户清空，新文件为BNU_Mark25_Streaming_0922_162800.dat。
 
+后续146.5Hz配置和24帧压力测试见 [FRAME_RECONSTRUCTION_146P5.md](../Matlab/FRAME_RECONSTRUCTION_146P5.md)。
+
 ## 已完成与核心结论
 
 已修改唯一活动源码 CPP_IVIC_Streaming.cpp，通过指定 Visual Studio 2022 的 devenv.com 编译 Debug/Release x64，并连接真实 SA230P AQ00071865（CST，驱动3.9.20621.38，固件3.7.393.0）执行测试。信号由用户保持开启，External1实测109.84118Hz、周期9.104ms、上升530ns、下降581ns，触发仍为50Ω卡端1.5V上升沿。
