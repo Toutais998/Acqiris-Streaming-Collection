@@ -73,6 +73,7 @@ struct DataChunk
 {
     std::vector<uint8_t> buffer;
     size_t validBytes;
+    size_t offsetBytes=0; // 中文：驱动 firstElement 是当前缓冲内偏移，不是样本编号。
 };
 
 // --- 用于多线程的全局变量 (内存池) ---
@@ -85,6 +86,7 @@ std::mutex g_dataMutex;
 std::condition_variable g_dataCondVar;
 
 std::atomic<bool> g_acquisitionFinished;
+std::atomic<bool> g_writeFailed{false};
 
 // 命名空间内定义配置参数
 namespace
@@ -108,7 +110,7 @@ namespace
     ViReal64 const pixelPeriod = activeLineDuration / pixelsPerLine;
     ViInt64 const recordSize = static_cast<ViInt64>(
         std::llround(activeLineDuration * sampleRate));
-    ViReal64 const deadTime = 32e-9; // 硬件死区时间 32 ns
+    ViReal64 const deadTime = 32e-9; // 中文：契约假定32ns，仅参与计算；未设置驱动，也不是本次实测值。
     ViReal64 const acquisitionCycle =
         (recordSize / sampleRate) + deadTime; // 一条 line总采样周期
 
@@ -118,14 +120,14 @@ namespace
         AQMD3_VAL_ACQUISITION_MODE_NORMAL; // 正常采集模式
 
     // 通道配置参数
-    ViReal64 const range = 2.5; // 输入量程 ±2.5V
+    ViReal64 const range = 2.5; // 中文：满量程跨度FSR为2.5V，并非±2.5V。
     /*偏移量我给了一个1.25v，只采集正信号*/
     ViReal64 const offset = 1.25;                            // 输入偏移
     ViInt32 const coupling = AQMD3_VAL_VERTICAL_COUPLING_DC; // 直流耦合
 
     // 触发配置参数
     ViConstString triggerSource = "External1";                     // 触发源为外部触发
-    ViReal64 const triggerLevel = 1.5; // 卡端 50 Ω 实际触发电平；不可直接等同 1 MΩ 示波器开路幅值
+    ViReal64 const triggerLevel = 1.5; // 中文：50Ω实测约0–3.1V，中点1.55V；保留已验证1.5V。1MΩ输出幅值不可按固定比例换算。
     ViInt32 const triggerSlope = AQMD3_VAL_TRIGGER_SLOPE_POSITIVE; // 触发沿为上升沿
 
     // 读取参数
@@ -155,7 +157,7 @@ namespace
 
     // 流式采集总时长（秒）
     auto const streamingDuration = seconds(5);
-    /* 这个版本支持最大采集时长10s*/
+    // 中文：5秒为默认观察窗，不代表硬件时长上限；长时运行需验证持续写盘。
 
     // 内存缓冲区设置 (现在这个不再是瓶颈，可以按需调整)
     // const size_t MEMORY_BUFFER_SIZE = 1024 * 1024 * 1024;    // 1GB 内存缓冲区
@@ -190,8 +192,9 @@ void fileWriter(FILE *outputFile, size_t &totalDataWritten)
 
         if (chunk.validBytes > 0)
         {
-            fwrite(chunk.buffer.data(), 1, chunk.validBytes, outputFile);
-            totalDataWritten += chunk.validBytes;
+            size_t written=fwrite(chunk.buffer.data()+chunk.offsetBytes, 1, chunk.validBytes, outputFile);
+            totalDataWritten += written;
+            if(written!=chunk.validBytes) g_writeFailed=true; // 中文：短写必须可见，不能报告为成功。
 
             // 将用完的缓冲区归还给空闲池
             {
@@ -207,8 +210,102 @@ void fileWriter(FILE *outputFile, size_t &totalDataWritten)
 // 主程序入口
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int main()
+// 中文诊断入口：参数为样本数、完整记录数、每轮是否复现旧版 Sleep(1us)、是否落盘。
+// 显式不落盘仅用于诊断，所有取回样本均计数；不可把诊断结果当正式保存数据。
+void Diagnose(ViSession session, ViInt64 samples, int target, bool legacySleep,
+              bool disk, FILE* file, double timestampPeriod)
 {
+    using Clock = std::chrono::steady_clock;
+    ViInt64 grain=0, mg=0;
+    checkApiCall(AqMD3_GetAttributeViInt64(session, sampleStreamName, AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES, &grain));
+    checkApiCall(AqMD3_GetAttributeViInt64(session, markerStreamName, AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES, &mg));
+    FetchBuffer data(size_t(samples/2 + grain/4)), markers(size_t(16+mg/4));
+    std::vector<LibTool::TriggerMarker> decoded;
+    std::vector<double> completed;
+    decoded.reserve(target); completed.reserve(target);
+    ViInt64 bytes=0, maxRemaining=0, maxMarkerRemaining=0, maxFirst=0;
+    int empty=0, count=0;
+    double fetchMs=0, sleepMs=0, writeMs=0;
+    bool pending=false;
+    cout << "DIAG samples=" << samples << " target=" << target
+         << " legacy_sleep=" << legacySleep << " disk=" << disk
+         << " (disk=0: DIAGNOSTIC DATA NOT SAVED)\n";
+    auto begin=Clock::now();
+    checkApiCall(AqMD3_InitiateAcquisition(session));
+    while(count<target && std::chrono::duration<double>(Clock::now()-begin).count()<10.0)
+    {
+        if(!pending)
+        {
+            ViInt64 remain=0, actual=0, first=0;
+            checkApiCall(AqMD3_StreamFetchDataInt32(session, markerStreamName,16,markers.size(),reinterpret_cast<ViInt32*>(markers.data()),&remain,&actual,&first));
+            maxMarkerRemaining=std::max(maxMarkerRemaining,remain);
+            if(actual!=0 && actual!=16) throw runtime_error("Incomplete marker: diagnostic stopped");
+            if(first<0 || actual<0 || first+actual>ViInt64(markers.size())) throw runtime_error("Marker bounds");
+            if(actual==16)
+            {
+                LibTool::ArraySegment<int32_t> segment(markers,size_t(first),size_t(actual));
+                decoded.push_back(LibTool::StandardStreaming::DecodeTriggerMarker(segment));
+                pending=true;
+            }
+        }
+        if(pending)
+        {
+            ViInt64 remain=0, actual=0, first=0;
+            auto t=Clock::now();
+            checkApiCall(AqMD3_StreamFetchDataInt32(session,sampleStreamName,samples/2,data.size(),reinterpret_cast<ViInt32*>(data.data()),&remain,&actual,&first));
+            fetchMs+=std::chrono::duration<double,std::milli>(Clock::now()-t).count();
+            maxRemaining=std::max(maxRemaining,remain); maxFirst=std::max(maxFirst,first);
+            if(first<0 || actual<0 || first+actual>ViInt64(data.size())) throw runtime_error("Sample bounds");
+            if(actual && actual!=samples/2) throw runtime_error("Partial record: diagnostic stopped without consuming next marker");
+            if(actual)
+            {
+                bytes+=actual*4;
+                if(disk)
+                {
+                    t=Clock::now();
+                    if(fwrite(data.data()+first,4,size_t(actual),file)!=size_t(actual)) throw runtime_error("Short disk write");
+                    writeMs+=std::chrono::duration<double,std::milli>(Clock::now()-t).count();
+                }
+                ++count; pending=false;
+                completed.push_back(std::chrono::duration<double>(Clock::now()-begin).count());
+            }
+            else ++empty; // 中文：marker 已到、样本未到时必须保留 pending，不能消费下一个 marker。
+        }
+        if(legacySleep)
+        {
+            auto t=Clock::now(); sleep_for(microseconds(1));
+            sleepMs+=std::chrono::duration<double,std::milli>(Clock::now()-t).count();
+        }
+        else std::this_thread::yield();
+    }
+    double elapsed=std::chrono::duration<double>(Clock::now()-begin).count();
+    checkApiCall(AqMD3_Abort(session)); // 中文：到达诊断上限立即停止，尚未读取的板端尾部明确不纳入此测试。
+    if(fflush(file)!=0) throw runtime_error("Flush failed");
+    cout << std::dec << std::setprecision(12) << "DIAG_RESULT records=" << count << " markers=" << decoded.size()
+         << " bytes=" << bytes << " elapsed_s=" << elapsed << " fetch_ms=" << fetchMs
+         << " sleep_ms=" << sleepMs << " write_ms=" << writeMs << " empty_fetch=" << empty
+         << " max_first=" << maxFirst << " max_sample_remaining=" << maxRemaining
+         << " max_marker_remaining=" << maxMarkerRemaining << '\n';
+    for(size_t i=0;i<completed.size();++i)
+        cout << "MARKER n=" << i << " index=" << decoded[i].recordIndex
+             << " tick=" << decoded[i].absoluteSampleIndex
+             << " dt_ms=" << (i ? (decoded[i].absoluteSampleIndex-decoded[i-1].absoluteSampleIndex)*timestampPeriod*1000 : 0)
+             << " host_s=" << completed[i] << '\n';
+    if(count!=target) throw runtime_error("Diagnostic timeout: requested record count not reached");
+}
+
+int main(int argc, char** argv)
+{
+    bool diagnostic=argc>1 && std::string(argv[1])=="--diag";
+    ViInt64 recordSize=::recordSize;
+    int target=10; bool legacySleep=false, diagnosticDisk=false;
+    if(argc>1)
+    {
+        if(!diagnostic || argc!=6) { cerr << "Usage: --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
+        try { recordSize=std::stoll(argv[2]); target=std::stoi(argv[3]); legacySleep=std::stoi(argv[4])!=0; diagnosticDisk=std::stoi(argv[5])!=0; }
+        catch(...) { return 2; }
+        if(recordSize<1024 || recordSize>8193600 || recordSize%64 || target<1 || target>600) return 2;
+    }
     cout << "Triggered Streaming \n\n";
 
     // --- 添加文件输出逻辑 ---
@@ -222,14 +319,14 @@ int main()
         std::string(dateSuffix) + ".dat");
 
     // 打开输出文件 - 改用C风格I/O以提升性能
-    FILE *outputFile = fopen(outputFileName.c_str(), "wb");
+    FILE *outputFile = fopen(diagnostic && !diagnosticDisk ? "NUL" : outputFileName.c_str(), "wb");
     if (outputFile == nullptr)
     {
         std::cerr << "错误: 无法打开输出文件！ -> " << outputFileName << std::endl;
         return 1;
     }
 
-    cout << "数据将存储至: " << outputFileName << "\n\n";
+    cout << "Output: " << (diagnostic && !diagnosticDisk ? "NONE (diagnostic)" : outputFileName) << "\n\n";
 
     // --- 移除单体内存缓冲区 ---
     size_t totalDataWritten = 0;
@@ -350,13 +447,22 @@ int main()
         checkApiCall(AqMD3_ApplySetup(session));
         checkApiCall(AqMD3_SelfCalibrate(session));
 
+        if(diagnostic)
+        {
+            Diagnose(session,recordSize,target,legacySleep,diagnosticDisk,outputFile,timestampPeriod);
+            fclose(outputFile); outputFile=nullptr;
+            checkApiCall(AqMD3_close(session)); return 0;
+        }
+
         // --- 初始化内存池 ---
         // 每条 line 约 16.4 MB（int32 流格式）；8 个缓冲区约 128 MB。
         // 若磁盘吞吐低于采集吞吐，队列耗尽时主动报错，避免静默丢 line。
         const int NUM_BUFFERS_IN_POOL = 8;
+        ViInt64 sampleGrain=0;
+        checkApiCall(AqMD3_GetAttributeViInt64(session,sampleStreamName,AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES,&sampleGrain));
         ViInt64 const bufferSizeBytes =
             maxAcquisitionElements *
-            sizeof(int32_t); // 每个缓冲区的大小与最大单次抓取相同
+            sizeof(int32_t) + sampleGrain; // 中文：仅增加驱动对齐余量，池仍为8块。
         for (int i = 0; i < NUM_BUFFERS_IN_POOL; ++i)
         {
             g_freeBufferQueue.push(std::vector<uint8_t>(bufferSizeBytes));
@@ -385,13 +491,15 @@ int main()
         cout << "Acquisition is running\n\n";
 
         // 计算采集结束时间点
-        auto const endTime = system_clock::now() + streamingDuration;
+        auto const endTime = std::chrono::steady_clock::now() + streamingDuration;
         std::chrono::steady_clock::time_point acquisitionStartTime =
             std::chrono::steady_clock::now();
 
         // 采集循环，持续到采集时长结束
-        while (system_clock::now() < endTime)
+        ViInt64 fetchedBytes=0, maxFirstElement=0, maxRemaining=0;
+        while (std::chrono::steady_clock::now() < endTime)
         {
+            if(g_writeFailed) throw runtime_error("Disk short write");
             // 读取触发标记数据
             LibTool::ArraySegment<int32_t> markerArraySegment =
                 FetchAvailableElements(session, markerStreamName, maxMarkerElements,
@@ -406,9 +514,10 @@ int main()
 
                 if (numAvailableRecords == 0)
                 {
-                    sleep_for(std::chrono::microseconds(1));
-                    continue;
+                    throw runtime_error("Incomplete trigger marker");
                 }
+                if(numAvailableRecords!=1 || markerArraySegment.Size()!=maxMarkerElements)
+                    throw runtime_error("Unexpected marker count");
 
                 // --- 核心修改：获取采样数据并传递给写入线程 ---
 
@@ -438,18 +547,32 @@ int main()
                 ViInt32 *bufferData = reinterpret_cast<ViInt32 *>(sampleChunk.data());
                 ViInt64 bufferSizeInElements = sampleChunk.size() / sizeof(ViInt32);
 
-                checkApiCall(AqMD3_StreamFetchDataInt32(
-                    session, sampleStreamName, nbrElementsToFetch, bufferSizeInElements,
-                    bufferData, &remainingElements, &actualElements, &firstElement));
+                auto sampleDeadline=std::chrono::steady_clock::now()+seconds(2);
+                do
+                {
+                    checkApiCall(AqMD3_StreamFetchDataInt32(
+                        session, sampleStreamName, nbrElementsToFetch, bufferSizeInElements,
+                        bufferData, &remainingElements, &actualElements, &firstElement));
+                    if(firstElement<0 || actualElements<0 || firstElement+actualElements>bufferSizeInElements)
+                        throw runtime_error("Sample buffer bounds");
+                    if(actualElements==0)
+                    {
+                        if(std::chrono::steady_clock::now()>sampleDeadline) throw runtime_error("Samples timeout after marker");
+                        std::this_thread::yield(); // 中文：保留当前marker，避免样本未到就错配下一条。
+                    }
+                } while(actualElements==0);
+                if(actualElements!=nbrElementsToFetch) throw runtime_error("Partial record returned");
+                fetchedBytes+=actualElements*4;
+                maxFirstElement=std::max(maxFirstElement,firstElement);
+                maxRemaining=std::max(maxRemaining,remainingElements);
 
                 // 4. 将带有有效数据的缓冲区推入数据队列
                 if (actualElements > 0)
                 {
                     DataChunk chunk;
                     chunk.buffer = std::move(sampleChunk);
-                    // 注意：API返回的firstElement是缓冲区内的偏移，我们必须把它也考虑进去
-                    // 然而，为了简化，当前假定firstElement为0。一个完整的实现需要处理这个偏移。
-                    // 我们只写入实际获取的数据量。
+                    // 中文：从 firstElement 开始保存实际样本，不能从缓冲区首地址写入。
+                    chunk.offsetBytes=size_t(firstElement)*sizeof(ViInt32);
                     chunk.validBytes = actualElements * sizeof(ViInt32);
                     {
                         std::lock_guard<std::mutex> lock(g_dataMutex);
@@ -478,9 +601,12 @@ int main()
                 //           << std::endl;
             }
 
-            // 缩短休眠时间以提高响应速度
-            sleep_for(std::chrono::microseconds(1));
+            // 中文：让出CPU但不请求定时休眠，防止Windows定时粒度造成周期性积压。
+            std::this_thread::yield(); // 中文：Windows微秒sleep实测可休眠约13ms，造成流式积压。
         }
+
+        double actualSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-acquisitionStartTime).count();
+        checkApiCall(AqMD3_Abort(session)); // 中文：先停卡再排空主机写队列，避免等待写盘时继续采集。
 
         // --- 等待写入线程处理完剩余数据 ---
         g_acquisitionFinished = true;
@@ -489,7 +615,13 @@ int main()
         if (writerThread.joinable())
             writerThread.join(); // 等待写入线程结束
 
-        fclose(outputFile);
+        int flushResult=fflush(outputFile);
+        int closeResult=fclose(outputFile); outputFile=nullptr;
+        if(g_writeFailed || flushResult || closeResult) throw runtime_error("Disk write/flush/close failed");
+        cout << std::dec << "RUN_RESULT records=" << totalTriggers << " elapsed_s=" << actualSeconds
+             << " fetched_bytes=" << fetchedBytes << " written_bytes=" << totalDataWritten
+             << " max_first=" << maxFirstElement << " max_remaining=" << maxRemaining
+             << " tail_policy=unread_card_tail_not_saved\n";
 
         // 输出最终统计信息
         cout << "\n采集结束统计:\n";
@@ -499,7 +631,7 @@ int main()
 
         // 停止采集
         cout << "\nStopping acquisition\n";
-        checkApiCall(AqMD3_Abort(session));
+        // 中文：板卡已在写线程排空前停止。
 
         // 关闭驱动
         checkApiCall(AqMD3_close(session));
@@ -509,6 +641,7 @@ int main()
     catch (std::exception const &exc)
     {
         std::cerr << "Error: " << exc.what() << std::endl;
+        if(session!=VI_NULL) AqMD3_Abort(session);
 
         // 确保在异常情况下也能正确停止并加入后台线程
         g_acquisitionFinished = true;
@@ -518,8 +651,8 @@ int main()
             writerThread.join();
         }
 
-        if (session != VI_NULL)
-            checkApiCall(AqMD3_close(session));
+        if(outputFile) fclose(outputFile);
+        if (session != VI_NULL) AqMD3_close(session);
         return 1;
     }
 }

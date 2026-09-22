@@ -6,7 +6,7 @@ This directory contains the active SA230P IVI-C AqMD3 triggered-streaming exampl
 
 ## Acquisition contract
 
-The XY galvo emits one approximately 9,104 microsecond line period at about 109.8 Hz. The forward scan occupies 90% of the period. The example uses the rising edge of `External1` as the one-trigger-per-line event, 1 GS/s, a 24 ns hardware dead-time budget, and a record derived from the 8,193.6 microsecond active window. The 2.5 MHz pixel/40 clock is a synchronization reference, not the record trigger.
+The XY galvo emits one approximately 9,104 microsecond line period at about 109.8 Hz. The forward scan occupies 90% of the period. The example uses the rising edge of `External1`, 1 GS/s, a nominal 32 ns dead-time assumption, and an 8,193.6 microsecond active window. The deadTime constant does not configure hardware and was not measured by these tests. The 2.5 MHz pixel/40 clock is a synchronization reference, not the record trigger.
 
 ## Known constraints and issues
 
@@ -17,6 +17,8 @@ The XY galvo emits one approximately 9,104 microsecond line period at about 109.
 - Hardware-dependent streaming behavior requires a real SA230P with CST; simulated mode is not validation.
 
 ## Change requirements
+
+Read `HANDOFF.md` and `DIAGNOSTIC_RESULTS.txt` for the real-card tests. Unconditional `sleep_for(1us)` caused millisecond host stalls and stream backlog. Use marker timestamps to distinguish accepted triggers from host readout rate. Never assume `firstElement` is zero (8 was observed). The `--diag samples records legacySleep disk` mode explicitly consumes without saving when disk=0; it is not a production acquisition. Record size must be a multiple of 64 for this card. Voltage conversion is nonlinear for the user's source; use measured 50 ohm levels.
 
 - Keep the active source named `CPP_IVIC_Streaming.cpp`; do not add numbered backup `.cpp` files.
 - Record parameter rationale in `VERSION_HISTORY.md` and add Chinese explanatory comments when changing code or configuration.

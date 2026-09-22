@@ -13,6 +13,8 @@ The numbered and named backup sources that previously lived beside the active en
 
 ## 2026-09-22
 
+新增命令行诊断模式及交接报告：真实SA230P上完成1/2/10/110/550条记录、完整/半/1ms窗口、旧休眠/取消休眠及落盘对照。旧版每轮sleep_for(1us)实测产生毫秒级等待和流积压，marker仍连续；正常路径改用yield，修复firstElement偏移和对齐余量，样本未到时保留marker，短写/部分记录显式报错，停卡后再排空写线程。8块池、1GS/s、8193600点及50Ω端1.5V上升沿保持；5秒正常实测548条、8980185600字节、无overflow。32ns仅为计算假设，非实测；550条诊断中有一次10.104ms间隔待查。详见HANDOFF.md及DIAGNOSTIC_RESULTS.txt。
+
 Added `Trouble_Shot.md` and this directory-local `AGENTS.md`. The troubleshooting note records the manual-confirmed fixed 50 ohm termination, the recommended 2.5 V rising-edge trigger for a 0–5 V line signal, and the approximately 1.8 GB/s sustained-stream calculation behind the overflow investigation.
 
 补充电压换算约定：用户给出的幅值默认是示波器 1 MΩ 端口读数；接入固定 50 Ω 负载后必须以实测负载电压重新计算，并在代码注释中注明。
