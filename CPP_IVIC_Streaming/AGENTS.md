@@ -1,12 +1,18 @@
 # CPP_IVIC_Streaming Directory Guide
 
+## Unified acquisition modes (2026-09-23)
+
+The user parameter block in CPP_IVIC_Streaming.cpp is the configuration entry point. LineOnly uses LINE on TRG IN and explicitly disables IO2 gating. LineLaser uses laser sync on TRG IN and LINE on IO2/In-TriggerEnable; it adds a configurable record tail (currently 4.8 us) which MATLAB excludes from pixel integration. Default stop mode is frame count; fixed duration is opt-in. Frame count means complete records, with separately calculated nominal duration and timeout. Check ACQUISITION_MODES.md and UNIFIED_MODES_VALIDATION.md for current behavior. Earlier acquisition descriptions below are historical where they conflict with this section.
+
+Do not hide timing anomalies by deleting startup records. Completion of data transfer does not prove alignment to the first scan line or first laser edge. Restore IO2 settings on exit, preserve bounded back-pressure, and keep hardware validation distinct from synthetic MATLAB regression tests. Chinese user documentation accompanies these changes.
+
 ## Scope
 
 This directory contains the active SA230P IVI-C AqMD3 triggered-streaming example, its Visual Studio solution, local AqMD3 header, manual, and troubleshooting records. `CPP_IVIC_Streaming.cpp` is the only active streaming source included by the project.
 
 ## Acquisition contract
 
-The current test configuration uses a 6,828 microsecond line period at about 146.45 Hz. The requested pixel time is 12 microseconds, so each 512-pixel record is 6,144,000 samples (6.144 ms); this deliberately differs from the 90% period calculation (6,145,200 samples at 1 GS/s) by 1.2 microseconds. The rising edge of `External1` remains the line trigger. The nominal 32 ns dead-time constant does not configure hardware. The 2.5 MHz pixel/40 clock remains a synchronization reference, not the record trigger.
+The acquisition configuration is `linePeriod`, `pixelsPerLine` (also `linesPerFrame`), fixed `lineActiveDuty=0.9`, `frameFlyback=1 ms`, and `framesToAcquire`. Pixel period is derived from the aligned record length and pixel count. The current test line period is 6,828 microseconds at about 146.45 Hz; the aligned active record is about 6.145216 ms. The rising edge of `External1` remains the line trigger. The nominal 32 ns dead-time constant does not configure hardware. The 2.5 MHz pixel/40 clock remains a synchronization reference, not the record trigger.
 
 ## Known constraints and issues
 
@@ -18,7 +24,7 @@ The current test configuration uses a 6,828 microsecond line period at about 146
 
 ## Change requirements
 
-For one complete image, use `--frame`: 512 complete records, currently 6,144,000 samples/line, asynchronous disk writer, and a timeout. For repeated frames use `--frames N`; it performs a disk-space check, writes `.config.json` and `.markers.csv`, and reports queue and write timing. The raw file remains headerless int16. MATLAB reads the record parameters from `.config.json`; for the current 12 microsecond pixel time it can reshape 12,000 samples/pixel. See `../Matlab/FRAME_RECONSTRUCTION_146P5.md`.
+The default executable run uses `framesToAcquire`; `--frame` means one frame and `--frames N` overrides the count. It performs a disk-space check, writes `.config.json` and `.markers.csv`, and reports queue and write timing. The raw file remains headerless int16. MATLAB reads the record parameters and `frameFlyback` from `.config.json`, and treats the extra frame interval as a frame boundary.
 
 Read `HANDOFF.md` and `DIAGNOSTIC_RESULTS.txt` for the real-card tests. Unconditional `sleep_for(1us)` caused millisecond host stalls and stream backlog. Use marker timestamps to distinguish accepted triggers from host readout rate. Never assume `firstElement` is zero (8 was observed). The `--diag samples records legacySleep disk` mode explicitly consumes without saving when disk=0; it is not a production acquisition. Record size must be a multiple of 64 for this card. Voltage conversion is nonlinear for the user's source; use measured 50 ohm levels.
 

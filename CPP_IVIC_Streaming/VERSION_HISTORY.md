@@ -1,5 +1,9 @@
 # Streaming version history
 
+## 2026-09-23：统一生产采集模式
+
+备份当前工作C++与MATLAB后，将用户参数集中，新增单LINE触发/LINE+激光IO2门控选择、默认按帧数/可选固定秒数停止，删除遗留streamingDuration与闲置读取实现。按完整记录计帧、从行周期/帧间隔估算时长，新增CLI与只计算模式，明确时序异常和首行未验证状态。保留8块池及背压，补齐单通道展开余量、配置读回、IO恢复及文件完整性校验。MATLAB按完整记录步进，仅对有效段重建，检查跨帧时间并拒绝未显式允许的异常时序；测试修复多帧JSON结构问题。使用说明及备份哈希见ACQUISITION_MODES.md；实测与未完成项见UNIFIED_MODES_VALIDATION.md。
+
 The numbered and named backup sources that previously lived beside the active entry point were removed from the build directory. Their progression is preserved here as a lightweight index; exact source snapshots should be recovered from Git commits when available.
 
 | Range | Summary |
@@ -12,6 +16,8 @@ The numbered and named backup sources that previously lived beside the active en
 | current | Line-triggered full-line record configuration; one record per 109.8 Hz line |
 
 ## 2026-09-22
+
+补充帧级飞返和参数化采集：每512行的约1ms间隔按ScanImage的Frame flyback建模；总帧周期为`linesPerFrame×linePeriod+frameFlyback`。C++默认由`framesToAcquire`决定帧数，`--frames N`可覆盖；像素时间由对齐后的record长度、采样率和像素数计算，不再单独配置。已加入多帧配置/性能报告字段。
 
 切换测试配置为line period 6828us、像素时间12000ns、每行6144000点，新增--frames N连续整帧模式、磁盘20GiB安全余量检查、配置/性能报告、marker CSV和写盘/队列耗时。真实三角波100kHz、1MΩ设置0–2V（50Ω端电压须以实测为准）下，1帧512行成功；4帧25.17GB成功；24帧150.995GB、83.93s成功且无overflow，但队列峰值7/8、最大缓冲等待136ms，存在短时写盘背压但恢复正常，未测到失败上限。D盘测试后约22.1GiB可用，继续加压会突破安全余量，未再自动采集。MATLAB支持多帧选取并加入迟滞频率估计，实测100kHz、1.2周期/像素，三帧图像统计稳定。详见Matlab/FRAME_RECONSTRUCTION_146P5.md。
 

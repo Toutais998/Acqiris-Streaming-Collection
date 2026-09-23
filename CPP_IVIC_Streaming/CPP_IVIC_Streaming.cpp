@@ -1,5 +1,4 @@
-﻿#include "../include/LibTool.h"
-using LibTool::ToString;
+#include "../include/LibTool.h"
 #include "AqMD3.h"
 // #include "../include/IviVisaType.h"
 
@@ -13,17 +12,10 @@ using std::vector;
 #include <stdexcept>
 using std::runtime_error;
 #include <chrono>
-using std::chrono::duration_cast;
 using std::chrono::microseconds;
-using std::chrono::milliseconds;
-using std::chrono::minutes;
-using std::chrono::nanoseconds;
 using std::chrono::seconds;
-using std::chrono::system_clock;
-using std::chrono::time_point;
 #include <thread>
 using std::this_thread::sleep_for;
-using std::this_thread::sleep_until;
 #include <algorithm>
 #include <cmath>
 #include <atomic>
@@ -57,16 +49,8 @@ FetchAvailableElements(ViSession session, ViConstString streamName,
                        ViInt64 maxElementsToFetch, FetchBuffer &buffer);
 
 //! 读取指定数量的数据元素
-LibTool::ArraySegment<int32_t> FetchElements(ViSession session,
-                                             ViConstString streamName,
-                                             ViInt64 nbrElementsToFetch,
-                                             FetchBuffer &buffer);
 
 //! 将一条波形记录写入输出流
-void SaveRecord(LibTool::TriggerMarker const &triggerMarker,
-                ViInt64 nbrRecordElements,
-                LibTool::ArraySegment<int32_t> const &elementBuffer,
-                double timestampInterval, std::ostream &output);
 
 //! 根据仪器型号返回时间戳的周期（单位秒）
 double GetTimestampPeriodForModel(std::string const &model);
@@ -97,77 +81,41 @@ ViInt64 g_markerRemainingMax=0;
 // 命名空间内定义配置参数
 namespace
 {
-    // 仪器资源字符串和初始化选项，我把模拟模式关掉了
+    // ================= 用户参数区：一般只修改这一处 =================
+    enum class TriggerMode { LineOnly, LineLaser };
+    TriggerMode triggerMode = TriggerMode::LineOnly; // 默认单触发；双信号改LineLaser，或--trigger dual。
+    bool fixedDurationEnabled = false; // false按帧数；true固定秒数，两者互斥。
+    double fixedDurationSeconds = 5.0; // 从Initiate成功起计时，包括等触发；写队列随后排空。
+    ViInt64 framesToAcquire = 1; // 帧模式目标帧数。
+    ViInt64 pixelsPerLine = 512; // 方形图像，同时决定每帧行数。
+    double linePeriod = 6828e-6; // ScanImage行周期，秒。
+    double lineActiveDuty = 0.9; // 有效扫描占比，不能仅凭linePeriod推断。
+    double frameFlyback = 1e-3; // 每帧额外间隔，秒。
+    double sampleRate = 1e9; // 提高采样率前须重新验证PCIe和磁盘。
+    double dualGuardSeconds = 4.8e-6; // 双信号保护尾部，不参与MATLAB像素积分。
+    double lineTriggerLevel = 1.5; // TRG IN实际50Ω阈值，原LINE约0–3.1/3.23V。
+    double laserTriggerLevel = 1.0; // 激光50Ω约0–2V中点；1MΩ输出0–4V不可直接使用。
+    double range = 2.5; // IN1满量程跨度V。
+    double offset = 1.25; // 原单极性配置；零中心正弦测50Ω幅值后可考虑0。
+    double startWaitSeconds = 30.0; // 帧模式arm后等待首条record的超时。
+    double completionMarginSeconds = 10.0; // 首条后理论扫描时长之外的超时裕量。
+    double timingToleranceSeconds = 2e-6; // 行/帧间隔允许误差，异常仍保存并标记。
+    double deadTime = 32e-9; // 名义参考，不配置硬件、不是实测死区。
+    char const* outputDirectory = "D:\\Acq_Storage";
+    // ================= 参数区结束；以下为系统设置 =================
+    int const bufferPoolCount = 8; // 有限背压，禁止盲目增加缓冲。
+    double const ioTimeoutSeconds = 2.0;
     ViChar resource[] = "PXI1::0::0::INSTR";
     ViChar options[] = "Simulate=false, DriverSetup= Model=SA230P";
-
-    // 采集参数
-    bool const channelInterleavingEnabled =
-        false;                                        // 是否启用通道交错采样（多个通道独立采集数据，我们卡就一个通道）
-    ViReal64 const sampleRate = 1.0e9;                // 采样率 1 GS/s，最大4
-    ViReal64 const sampleInterval = 1.0 / sampleRate; // 采样间隔
-    // XY 双振镜扫描：每个 line 的上升沿启动一条 record。
-    // 中文：新line周期6828us；按用户明确的12us/像素取512×12=6144us。
-    // 90%理论为6145.2us，二者相差1.2us；此处优先保持准确像素时间。
-    ViReal64 const linePeriod = 6828e-6;
-    ViReal64 const lineActiveDuty = 0.9;
-    ViInt64 const pixelsPerLine = 512; // 每行像素数
-    ViReal64 const pixelPeriod = 12000e-9;
-    ViReal64 const activeLineDuration = pixelPeriod * pixelsPerLine;
-    ViInt64 const recordSize = static_cast<ViInt64>(
-        std::llround(activeLineDuration * sampleRate));
-    ViReal64 const deadTime = 32e-9; // 中文：契约假定32ns，仅参与计算；未设置驱动，也不是本次实测值。
-    ViReal64 const acquisitionCycle =
-        (recordSize / sampleRate) + deadTime; // 一条 line总采样周期
-
-    ViInt32 const streamingMode =
-        AQMD3_VAL_STREAMING_MODE_TRIGGERED; // 触发流式采集
-    ViInt32 const acquisitionMode =
-        AQMD3_VAL_ACQUISITION_MODE_NORMAL; // 正常采集模式
-
-    // 通道配置参数
-    ViReal64 const range = 2.5; // 中文：满量程跨度FSR为2.5V，并非±2.5V。
-    /*偏移量我给了一个1.25v，只采集正信号*/
-    ViReal64 const offset = 1.25;                            // 输入偏移
-    ViInt32 const coupling = AQMD3_VAL_VERTICAL_COUPLING_DC; // 直流耦合
-
-    // 触发配置参数
-    ViConstString triggerSource = "External1";                     // 触发源为外部触发
-    ViReal64 const triggerLevel = 1.5; // 中文：50Ω实测约0–3.1V，中点1.55V；保留已验证1.5V。1MΩ输出幅值不可按固定比例换算。
-    ViInt32 const triggerSlope = AQMD3_VAL_TRIGGER_SLOPE_POSITIVE; // 触发沿为上升沿
-
-    // 读取参数
-    ViConstString sampleStreamName = "StreamCh1";  // 采样数据流名称
-    ViConstString markerStreamName = "MarkersCh1"; // 触发标记流名称
-    // 一次只取一条 line，避免 8 MSamples/record 时分配数 GB 的临时缓冲。
-    ViInt64 const maxRecordsToFetchAtOnce = 1;
-
-    // 元素转换
-    int64_t const nbrSamplesPerElement =
-        sizeof(int32_t) / sizeof(int16_t); // 每个int32元素包含的int16采样点数
-    ViInt64 const nbrRecordElements =
-        recordSize / nbrSamplesPerElement; // 每条记录对应的int32元素数
-    ViInt64 const maxAcquisitionElements =
-        nbrRecordElements * maxRecordsToFetchAtOnce; // 最大采样元素数
-    ViInt64 const maxMarkerElements =
-        LibTool::StandardStreaming::NbrTriggerMarkerElements *
-        maxRecordsToFetchAtOnce; // 最大标记元素数
-
-    /* 读取失败时等待时间，单位毫秒 */
-    auto const dataWaitTime = milliseconds(1); // 减小等待时间到1ms
-
-    /* 等待采样数据准备的最长尝试次数 */
-    int64_t const recordDurationInMs = std::max(
-        static_cast<int64_t>(recordSize * sampleInterval * 1000.0), int64_t(1));
-    int const nbrWaitForSamplesAttempts = 3;
-
-    // 流式采集总时长（秒）
-    auto const streamingDuration = seconds(5);
-    // 中文：5秒为默认观察窗，不代表硬件时长上限；长时运行需验证持续写盘。
-
-    // 内存缓冲区设置 (现在这个不再是瓶颈，可以按需调整)
-    // const size_t MEMORY_BUFFER_SIZE = 1024 * 1024 * 1024;    // 1GB 内存缓冲区
-    // const size_t BUFFER_WRITE_THRESHOLD = 1024 * 1024 * 800; // 800MB 时写入磁盘
+    ViInt32 const streamingMode = AQMD3_VAL_STREAMING_MODE_TRIGGERED;
+    ViInt32 const acquisitionMode = AQMD3_VAL_ACQUISITION_MODE_NORMAL;
+    ViInt32 const coupling = AQMD3_VAL_VERTICAL_COUPLING_DC;
+    ViConstString triggerSource = "External1";
+    ViInt32 const triggerSlope = AQMD3_VAL_TRIGGER_SLOPE_POSITIVE;
+    ViConstString sampleStreamName = "StreamCh1";
+    ViConstString markerStreamName = "MarkersCh1";
+    ViInt64 const maxMarkerElements = LibTool::StandardStreaming::NbrTriggerMarkerElements;
+    ViSession g_session = VI_NULL; // API报错使用当前会话，不读无关全局错误队列。
 } // namespace
 
 // --- 文件写入线程函数 (使用C风格I/O以提升性能) ---
@@ -229,7 +177,7 @@ void Diagnose(ViSession session, ViInt64 samples, int target, bool legacySleep,
     ViInt64 grain=0, mg=0;
     checkApiCall(AqMD3_GetAttributeViInt64(session, sampleStreamName, AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES, &grain));
     checkApiCall(AqMD3_GetAttributeViInt64(session, markerStreamName, AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES, &mg));
-    FetchBuffer data(size_t(samples/2 + grain/4)), markers(size_t(16+mg/4));
+    FetchBuffer data(size_t(samples/2 + samples/4 + grain/4)), markers(size_t(16+mg/4));
     std::vector<LibTool::TriggerMarker> decoded;
     std::vector<double> completed;
     decoded.reserve(target); completed.reserve(target);
@@ -306,51 +254,118 @@ void Diagnose(ViSession session, ViInt64 samples, int target, bool legacySleep,
 
 int main(int argc, char** argv)
 {
-    bool frameMode=argc==2 && std::string(argv[1])=="--frame";
-    int64_t requestedFrames=frameMode ? 1 : 0;
-    bool discard=false;
-    if(argc>=3 && std::string(argv[1])=="--frames")
-    {
-        try { requestedFrames=std::stoll(argv[2]); } catch(...) { return 2; }
-        if(requestedFrames<1 || requestedFrames>100000 || argc>4) return 2;
-        if(argc==4) { if(std::string(argv[3])!="--discard") return 2; discard=true; }
-        frameMode=true;
+    bool frameMode = !fixedDurationEnabled, discard = false, planOnly = false;
+    int64_t requestedFrames = framesToAcquire;
+    bool diagnostic = argc > 1 && std::string(argv[1]) == "--diag";
+    ViInt64 diagnosticSamples = 0;
+    int target = 10; bool legacySleep = false, diagnosticDisk = false;
+    try {
+        bool stopSpecified = false;
+        auto number = [](const std::string& text) {
+            size_t end = 0; double v = std::stod(text, &end);
+            if(end != text.size() || !std::isfinite(v)) throw runtime_error("Invalid numeric value");
+            return v;
+        };
+        auto integer = [&](const std::string& text) {
+            double v = number(text);
+            if(v != std::floor(v) || v < 1 || v > 1000000) throw runtime_error("Invalid integer");
+            return static_cast<ViInt64>(v);
+        };
+        if(diagnostic) {
+            if(argc != 6) throw runtime_error("Usage: --diag samples records legacySleep disk");
+            diagnosticSamples = std::stoll(argv[2]); target = std::stoi(argv[3]);
+            legacySleep = std::stoi(argv[4]) != 0; diagnosticDisk = std::stoi(argv[5]) != 0;
+            if(diagnosticSamples < 1024 || diagnosticSamples > 8193600 || diagnosticSamples % 64 || target < 1 || target > 600)
+                throw runtime_error("Invalid diagnostic size");
+            discard = !diagnosticDisk; frameMode = false;
+        } else for(int i = 1; i < argc; ++i) {
+            std::string a(argv[i]);
+            auto value = [&]() -> std::string { if(++i >= argc) throw runtime_error("Missing argument"); return argv[i]; };
+            if(a == "--help") {
+                cout << "Usage: [--trigger single|dual] [--frames N | --frame | --seconds S]\n"
+                     << " [--pixels N] [--line-us U] [--flyback-ms M] [--offset V] [--discard] [--plan]\n";
+                return 0;
+            }
+            if(a == "--trigger") {
+                auto v = value();
+                if(v != "single" && v != "dual") throw runtime_error("Unknown trigger mode");
+                triggerMode = v == "dual" ? TriggerMode::LineLaser : TriggerMode::LineOnly;
+            } else if(a == "--frames" || a == "--frame" || a == "--seconds") {
+                if(stopSpecified) throw runtime_error("Choose frames OR seconds, not both");
+                stopSpecified = true; frameMode = a != "--seconds";
+                if(a == "--seconds") fixedDurationSeconds = number(value());
+                else requestedFrames = a == "--frame" ? 1 : integer(value());
+            } else if(a == "--pixels") pixelsPerLine = integer(value());
+            else if(a == "--line-us") linePeriod = number(value()) * 1e-6;
+            else if(a == "--flyback-ms") frameFlyback = number(value()) * 1e-3;
+            else if(a == "--offset") offset = number(value());
+            else if(a == "--discard") discard = true;
+            else if(a == "--plan") planOnly = true;
+            else throw runtime_error("Unknown argument: " + a);
+        }
+        if(requestedFrames < 1 || requestedFrames > 100000 || pixelsPerLine < 1 || pixelsPerLine > 16384
+            || !std::isfinite(sampleRate) || sampleRate <= 0 || sampleRate > 4e9
+            || !std::isfinite(linePeriod) || linePeriod <= 0 || linePeriod > 1
+            || !std::isfinite(lineActiveDuty) || lineActiveDuty <= 0 || lineActiveDuty >= 1
+            || !std::isfinite(frameFlyback) || frameFlyback < 0 || frameFlyback > 60
+            || !std::isfinite(dualGuardSeconds) || dualGuardSeconds < 0
+            || !std::isfinite(fixedDurationSeconds) || fixedDurationSeconds <= 0 || fixedDurationSeconds > 86400
+            || startWaitSeconds <= 0 || completionMarginSeconds <= 0)
+            throw runtime_error("Configuration outside supported limits");
+    } catch(const std::exception& e) { cerr << e.what() << "\nUse --help\n"; return 2; }
+    bool const dual = triggerMode == TriggerMode::LineLaser;
+    ViInt64 const linesPerFrame = pixelsPerLine;
+    ViInt64 const activeLineSamples = static_cast<ViInt64>(std::llround(linePeriod * lineActiveDuty * sampleRate / 64.0)) * 64;
+    ViInt64 const guardSamples = dual ? static_cast<ViInt64>(std::ceil(dualGuardSeconds * sampleRate / 64.0)) * 64 : 0;
+    ViInt64 const recordSize = diagnostic ? diagnosticSamples : activeLineSamples + guardSamples;
+    if(recordSize < 1024 || activeLineSamples < pixelsPerLine || recordSize / sampleRate >= linePeriod) {
+        cerr << "Record must fit inside line period; active samples must cover all pixels\n"; return 2;
     }
-    int64_t targetRecords=requestedFrames*512;
-    bool diagnostic=argc>1 && std::string(argv[1])=="--diag";
-    ViInt64 recordSize=::recordSize;
-    int target=10; bool legacySleep=false, diagnosticDisk=false;
-    if(argc>1 && !frameMode)
-    {
-        if(!diagnostic || argc!=6) { cerr << "Usage: --frame OR --frames N [--discard] OR --diag samples records legacySleep(0/1) disk(0/1)\n"; return 2; }
-        try { recordSize=std::stoll(argv[2]); target=std::stoi(argv[3]); legacySleep=std::stoi(argv[4])!=0; diagnosticDisk=std::stoi(argv[5])!=0; }
-        catch(...) { return 2; }
-        if(recordSize<1024 || recordSize>8193600 || recordSize%64 || target<1 || target>600) return 2;
-    }
-    cout << "Triggered Streaming \n\n";
-    if(frameMode && !discard)
-    {
+    ViInt64 const nbrRecordElements = recordSize / 2;
+    ViInt64 const targetRecords = requestedFrames * linesPerFrame;
+    double const pixelPeriod = activeLineSamples / sampleRate / pixelsPerLine;
+    double const framePeriod = linesPerFrame * linePeriod + frameFlyback;
+    double const nominalDuration = requestedFrames * framePeriod;
+    // 中文：首条触发至最后record结束，不含最后一帧之后的flyback。
+    double const expectedCaptureSeconds = (targetRecords - 1) * linePeriod
+        + (requestedFrames - 1) * frameFlyback + recordSize / sampleRate;
+    double const triggerLevel = dual ? laserTriggerLevel : lineTriggerLevel;
+    cout << std::setprecision(12) << "CONFIG trigger=" << (dual ? "dual" : "single")
+         << " stop=" << (frameMode ? "frames" : "seconds") << " frames=" << requestedFrames
+         << " pixels=" << pixelsPerLine << " line_s=" << linePeriod << " active_samples=" << activeLineSamples
+         << " guard_samples=" << guardSamples << " record_samples=" << recordSize
+         << " nominal_scan_s=" << nominalDuration << " first_trigger_to_last_end_s=" << expectedCaptureSeconds
+         << " fixed_s=" << fixedDurationSeconds << " threshold_50ohm_V=" << triggerLevel << '\n';
+    if(planOnly) return 0; // 中文：只计算，不连接硬件、不创建文件。
+    if(!discard) {
         ULARGE_INTEGER freeBytes{};
-        bool spaceOk=GetDiskFreeSpaceExA("D:\\Acq_Storage",&freeBytes,nullptr,nullptr)!=0;
-        uint64_t need=uint64_t(targetRecords)*recordSize*2;
-        // 中文：采集前检查总文件容量，留20GiB；不扩大8块内存池。
-        if(!spaceOk || freeBytes.QuadPart<need+20ull*1024*1024*1024)
-        { cerr << "Insufficient disk space for requested frames plus 20 GiB reserve\n"; return 2; }
+        bool spaceOk = GetDiskFreeSpaceExA(outputDirectory, &freeBytes, nullptr, nullptr) != 0;
+        // 中文：固定时长按连续满采样上界预算，而非假定一定是每行一次。
+        double estimate = diagnostic ? double(target)*recordSize*2 :
+            frameMode ? double(targetRecords)*recordSize*2 :
+            (fixedDurationSeconds + ioTimeoutSeconds)*sampleRate*2 + recordSize*2;
+        uint64_t need = static_cast<uint64_t>(std::ceil(estimate));
+        if(!spaceOk || freeBytes.QuadPart < need + 20ull*1024*1024*1024) {
+            cerr << "Insufficient space (including 20 GiB reserve)\n"; return 2;
+        }
         cout << "SPACE_CHECK needed_bytes=" << need << " available_bytes=" << freeBytes.QuadPart << '\n';
     }
 
     // --- 添加文件输出逻辑 ---
     std::time_t now = std::time(nullptr);
-    std::tm *tm_now = std::localtime(&now);
+    std::tm tm_now{};
+    if(localtime_s(&tm_now, &now) != 0) { cerr << "Local time conversion failed\n"; return 1; }
     char dateSuffix[20];
     std::strftime(dateSuffix, sizeof(dateSuffix), "%m%d_%H%M%S",
-                  tm_now); // 格式化为"月日_时分"
-    std::string const outputFileName(
-        "D:\\Acq_Storage\\BNU_Mark25_Streaming_" +
-        std::string(dateSuffix) + (discard ? "_discard.dat" : ".dat"));
+                  &tm_now); // 格式化为"月日_时分"
+    // 中文：进程号+毫秒防止同秒重跑覆盖文件；独占创建仍检查碰撞。
+    std::string const outputFileName(std::string(outputDirectory) + "\\BNU_Mark1_" +
+        std::string(dateSuffix) + "_" + std::to_string(GetCurrentProcessId()) + "_" +
+        std::to_string(GetTickCount64()) + (discard ? "_discard.dat" : ".dat"));
 
     // 打开输出文件 - 改用C风格I/O以提升性能
-    FILE *outputFile = fopen(discard || (diagnostic && !diagnosticDisk) ? "NUL" : outputFileName.c_str(), "wb");
+    FILE *outputFile = nullptr;
+    fopen_s(&outputFile, discard ? "NUL" : outputFileName.c_str(), discard ? "wb" : "wbx");
     if (outputFile == nullptr)
     {
         std::cerr << "错误: 无法打开输出文件！ -> " << outputFileName << std::endl;
@@ -364,6 +379,17 @@ int main(int argc, char** argv)
 
     // 初始化驱动句柄
     ViSession session = VI_NULL;
+    std::string oldGateSignal;
+    ViInt32 oldGateTermination = 0;
+    bool gateChanged = false;
+    auto restoreGate = [&]() {
+        if(!gateChanged || session == VI_NULL) return;
+        checkApiCall(AqMD3_SetAttributeViString(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_SIGNAL, oldGateSignal.c_str()));
+        checkApiCall(AqMD3_SetAttributeViInt32(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_INPUT_TERMINATION, oldGateTermination));
+        checkApiCall(AqMD3_ApplySetup(session));
+        gateChanged = false;
+        cout << "IO2 restored\n";
+    };
     ViBoolean const idQuery = VI_FALSE; // 不查询设备ID
     ViBoolean const reset = VI_FALSE;   // 不复位设备
 
@@ -373,6 +399,8 @@ int main(int argc, char** argv)
     using Clock=std::chrono::steady_clock;
     Clock::time_point acquisitionStartTime{};
     bool started=false;
+    ViInt64 timingAnomalies = 0;
+    double timestampPeriod = 250e-12;
     double actualSeconds=0, flushSeconds=0, poolWaitMs=0, maxPoolWaitMs=0, fetchMs=0, maxFetchMs=0;
     ViInt64 fetchedBytes=0, maxFirstElement=0, maxRemaining=0;
     size_t queueHighWater=0;
@@ -384,9 +412,27 @@ int main(int argc, char** argv)
         report << std::setprecision(15) << "{\n\"status\":\"" << (complete ? "complete" : "failed")
             << "\",\n\"dataSaved\":" << (discard ? "false" : "true")
             << ",\n\"sampleRate\":" << sampleRate << ",\n\"recordSize\":" << recordSize
-            << ",\n\"linePeriod\":" << linePeriod << ",\n\"pixelPeriod\":" << pixelPeriod
-            << ",\n\"pixelsPerLine\":512,\n\"linesPerFrame\":512,\n\"requestedFrames\":" << requestedFrames
-            << ",\n\"completedRecords\":" << totalTriggers << ",\n\"completedFrames\":" << totalTriggers/512
+            << ",\n\"schemaVersion\":2"
+            << ",\n\"triggerMode\":\"" << (dual ? "line_laser" : "line_only") << "\""
+            << ",\n\"durationMode\":\"" << (frameMode ? "frames" : "seconds") << "\""
+            << ",\n\"fixedDurationSeconds\":" << fixedDurationSeconds
+            << ",\n\"nominalScanSeconds\":" << nominalDuration
+            << ",\n\"expectedCaptureSeconds\":" << expectedCaptureSeconds
+            << ",\n\"activeLineSamples\":" << activeLineSamples
+            << ",\n\"guardSamples\":" << guardSamples
+            << ",\n\"activeSampleOffset\":0"
+            << ",\n\"timingAnomalies\":" << timingAnomalies
+            << ",\n\"timingToleranceSeconds\":" << timingToleranceSeconds
+            << ",\n\"alignmentVerified\":false"
+            << ",\n\"nominalDeadTimeSeconds\":" << deadTime
+            << ",\n\"triggerLevelAt50Ohm\":" << triggerLevel
+            << ",\n\"range\":" << range << ",\n\"offset\":" << offset
+            << ",\n\"partialFrameLines\":" << totalTriggers%linesPerFrame
+            << ",\n\"linePeriod\":" << linePeriod << ",\n\"frameFlyback\":" << frameFlyback
+            << ",\n\"framePeriod\":" << framePeriod << ",\n\"pixelPeriod\":" << pixelPeriod
+            << ",\n\"activeDuty\":" << lineActiveDuty << ",\n\"pixelsPerLine\":" << pixelsPerLine
+            << ",\n\"linesPerFrame\":" << linesPerFrame << ",\n\"requestedFrames\":" << requestedFrames
+            << ",\n\"completedRecords\":" << totalTriggers << ",\n\"completedFrames\":" << totalTriggers/linesPerFrame
             << ",\n\"fetchedBytes\":" << fetchedBytes << ",\n\"writtenBytes\":" << (discard ? 0 : totalDataWritten)
             << ",\n\"elapsedSeconds\":" << actualSeconds << ",\n\"flushSeconds\":" << flushSeconds
             << ",\n\"poolWaitMs\":" << poolWaitMs << ",\n\"maxPoolWaitMs\":" << maxPoolWaitMs
@@ -401,11 +447,11 @@ int main(int argc, char** argv)
         // 中文：SA230P时间戳250ps，仅写已成功取样的marker。
         for(size_t i=0;i<size_t(totalTriggers) && i<frameMarkers.size();++i)
             metadata << i+1 << ',' << frameMarkers[i].recordIndex << ','
-                     << frameMarkers[i].GetInitialXTime(250e-12) << ','
-                     << (i ? (frameMarkers[i].absoluteSampleIndex-frameMarkers[i-1].absoluteSampleIndex)*250e-12 : 0) << '\n';
+                     << frameMarkers[i].GetInitialXTime(timestampPeriod) << ','
+                     << (i ? (frameMarkers[i].absoluteSampleIndex-frameMarkers[i-1].absoluteSampleIndex)*timestampPeriod : 0) << '\n';
         metadata.close();
         cout << std::dec << "PERF_RESULT status=" << (complete?"complete":"failed") << " records=" << totalTriggers
-             << " frames=" << totalTriggers/512 << " elapsed_s=" << actualSeconds << " flush_s=" << flushSeconds
+             << " frames=" << totalTriggers/linesPerFrame << " elapsed_s=" << actualSeconds << " flush_s=" << flushSeconds
              << " pool_wait_ms=" << poolWaitMs << " max_pool_wait_ms=" << maxPoolWaitMs
              << " write_ms=" << g_writeMs << " max_write_ms=" << g_maxWriteMs
              << " fetch_ms=" << fetchMs << " max_fetch_ms=" << maxFetchMs
@@ -419,6 +465,7 @@ int main(int argc, char** argv)
         // 初始化仪器驱动
         checkApiCall(
             AqMD3_InitWithOptions(resource, idQuery, reset, options, &session));
+        g_session = session;
         cout << "Driver initialized \n";
 
         // 读取并显示驱动和设备信息
@@ -479,8 +526,7 @@ int main(int argc, char** argv)
         }
 
         // 获取时间戳周期
-        ViReal64 const timestampPeriod =
-            GetTimestampPeriodForModel(instrumentModel);
+        timestampPeriod = GetTimestampPeriodForModel(instrumentModel);
 
         // 配置采集参数
         cout << "Configuring Acquisition\n";
@@ -515,28 +561,50 @@ int main(int argc, char** argv)
             session, triggerSource, AQMD3_ATTR_TRIGGER_LEVEL, triggerLevel));
         checkApiCall(AqMD3_SetAttributeViInt32(
             session, triggerSource, AQMD3_ATTR_TRIGGER_SLOPE, triggerSlope));
+        checkApiCall(AqMD3_SetAttributeViInt32(session, triggerSource, AQMD3_ATTR_TRIGGER_TYPE, AQMD3_VAL_EDGE_TRIGGER));
+        checkApiCall(AqMD3_SetAttributeViReal64(session, "", AQMD3_ATTR_TRIGGER_DELAY, 0.0));
+        ViChar gateSignals[4096]{}, gateSignal[128]{};
+        checkApiCall(AqMD3_GetAttributeViString(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_AVAILABLE_SIGNALS, sizeof(gateSignals), gateSignals));
+        if(dual && ("," + std::string(gateSignals) + ",").find(",In-TriggerEnable,") == std::string::npos)
+            throw runtime_error("IO2 does not advertise In-TriggerEnable");
+        checkApiCall(AqMD3_GetAttributeViString(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_SIGNAL, sizeof(gateSignal), gateSignal));
+        oldGateSignal = gateSignal;
+        checkApiCall(AqMD3_GetAttributeViInt32(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_INPUT_TERMINATION, &oldGateTermination));
+        gateChanged = true;
+        checkApiCall(AqMD3_SetAttributeViString(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_SIGNAL, dual ? "In-TriggerEnable" : "Disabled"));
+        if(dual) checkApiCall(AqMD3_SetAttributeViInt32(session, "ControlIO2", AQMD3_ATTR_CONTROL_IO_INPUT_TERMINATION, AQMD3_VAL_CONTROL_IO_INPUT_TERMINATION_WEAK_PULL_UP));
+        cout << "WIRING " << (dual ? "LASER->TRG IN; LINE->IO2 (high impedance, actively drive LOW when idle)" : "LINE->TRG IN; IO2 gate disabled") << '\n';
 
         // 应用配置并自校准
         cout << "\nApply setup and run self-calibration\n";
         checkApiCall(AqMD3_ApplySetup(session));
         checkApiCall(AqMD3_SelfCalibrate(session));
+        ViReal64 readRate = 0; ViInt64 readSize = 0;
+        checkApiCall(AqMD3_GetAttributeViReal64(session, "", AQMD3_ATTR_SAMPLE_RATE, &readRate));
+        checkApiCall(AqMD3_GetAttributeViInt64(session, "", AQMD3_ATTR_RECORD_SIZE, &readSize));
+        if(readSize != recordSize || std::abs(readRate-sampleRate) > sampleRate*1e-9)
+            throw runtime_error("Driver coerced sample rate/record size; refusing mismatched metadata");
 
         if(diagnostic)
         {
             Diagnose(session,recordSize,target,legacySleep,diagnosticDisk,outputFile,timestampPeriod);
             fclose(outputFile); outputFile=nullptr;
-            checkApiCall(AqMD3_close(session)); return 0;
+            restoreGate(); checkApiCall(AqMD3_close(session)); return 0;
         }
 
         // --- 初始化内存池 ---
-        // 每条 line 约 16.4 MB（int32 流格式）；8 个缓冲区约 128 MB。
+        // 中文：每块按实际record计算，额外空间用于驱动展开/对齐，不写入文件。
         // 若磁盘吞吐低于采集吞吐，队列耗尽时主动报错，避免静默丢 line。
-        const int NUM_BUFFERS_IN_POOL = 8;
+        const int NUM_BUFFERS_IN_POOL = bufferPoolCount;
         ViInt64 sampleGrain=0;
         checkApiCall(AqMD3_GetAttributeViInt64(session,sampleStreamName,AQMD3_ATTR_STREAM_GRANULARITY_IN_BYTES,&sampleGrain));
         ViInt64 const bufferSizeBytes =
-            maxAcquisitionElements *
-            sizeof(int32_t) + sampleGrain; // 中文：仅增加驱动对齐余量，池仍为8块。
+            (nbrRecordElements + nbrRecordElements/2) *
+            sizeof(int32_t) + sampleGrain; // 中文：手册第44页单通道需要50%展开余量，并非增加排队深度。
+        MEMORYSTATUSEX memory{}; memory.dwLength = sizeof(memory);
+        if(!GlobalMemoryStatusEx(&memory) || uint64_t(bufferSizeBytes)*NUM_BUFFERS_IN_POOL > memory.ullAvailPhys/4)
+            throw runtime_error("Buffer pool exceeds 25% of available RAM");
+        cout << "POOL bytes=" << bufferSizeBytes*NUM_BUFFERS_IN_POOL << " buffers=" << NUM_BUFFERS_IN_POOL << '\n';
         for (int i = 0; i < NUM_BUFFERS_IN_POOL; ++i)
         {
             g_freeBufferQueue.push(std::vector<uint8_t>(bufferSizeBytes));
@@ -562,11 +630,12 @@ int main(int argc, char** argv)
         // 启动采集
         cout << "\nInitiating acquisition\n";
         checkApiCall(AqMD3_InitiateAcquisition(session));
-        cout << "Acquisition is running\n\n";
+        cout << "ARMED: now start LINE/scanning; already-running LINE may produce misaligned initial records\n" << std::flush;
 
         // 计算采集结束时间点
-        auto const endTime = Clock::now() + (frameMode ? seconds(int64_t(std::ceil(targetRecords*linePeriod))+10) : streamingDuration);
         acquisitionStartTime = Clock::now(); started=true;
+        auto endTime = acquisitionStartTime + std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(frameMode ? startWaitSeconds : fixedDurationSeconds));
 
         // 采集循环，持续到采集时长结束
         frameMarkers.reserve(size_t(frameMode ? std::min<int64_t>(targetRecords,65536) : 1024));
@@ -580,6 +649,9 @@ int main(int argc, char** argv)
 
             if (markerArraySegment.Size() > 0)
             {
+                if(frameMode && frameMarkers.empty())
+                    endTime = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(expectedCaptureSeconds + completionMarginSeconds));
                 // 计算可用的记录数量
                 int64_t const numAvailableRecords =
                     int64_t(markerArraySegment.Size() /
@@ -596,6 +668,15 @@ int main(int argc, char** argv)
                     auto marker=LibTool::StandardStreaming::DecodeTriggerMarker(markerArraySegment);
                     if(!frameMarkers.empty() && marker.recordIndex!=((frameMarkers.back().recordIndex+1)&LibTool::TriggerMarker::RecordIndexMask))
                         throw runtime_error("Frame marker index discontinuity");
+                    if(!frameMarkers.empty()) {
+                        double dt = (marker.absoluteSampleIndex-frameMarkers.back().absoluteSampleIndex)*timestampPeriod;
+                        double expected = linePeriod + (frameMarkers.size()%linesPerFrame == 0 ? frameFlyback : 0.0);
+                        if(std::abs(dt-expected) > timingToleranceSeconds) {
+                            ++timingAnomalies;
+                            if(timingAnomalies <= 5) cerr << "TIMING_WARNING record=" << frameMarkers.size()+1
+                                << " dt_s=" << dt << " expected_s=" << expected << " (saved, not dropped)\n";
+                        }
+                    }
                     frameMarkers.push_back(marker);
                 }
 
@@ -611,12 +692,13 @@ int main(int argc, char** argv)
                     auto waitStart=Clock::now();
                     std::unique_lock<std::mutex> lock(g_freeBufferMutex);
                     // 等待缓冲区可用，设置超时以防死锁
-                    if (!g_freeBufferCondVar.wait_for(lock, std::chrono::seconds(2), []
-                                                      { return !g_freeBufferQueue.empty(); }))
+                    if (!g_freeBufferCondVar.wait_for(lock, std::chrono::duration<double>(ioTimeoutSeconds), []
+                                                      { return !g_freeBufferQueue.empty() || g_writeFailed; }))
                     {
                         throw std::runtime_error(
                             "采集线程超时: 没有可用的空闲缓冲区。磁盘I/O可能无法跟上。");
                     }
+                    if(g_writeFailed) throw runtime_error("Writer failed while waiting for buffer");
                     sampleChunk = std::move(g_freeBufferQueue.front());
                     g_freeBufferQueue.pop();
                     double ms=std::chrono::duration<double,std::milli>(Clock::now()-waitStart).count();
@@ -630,7 +712,7 @@ int main(int argc, char** argv)
                 ViInt32 *bufferData = reinterpret_cast<ViInt32 *>(sampleChunk.data());
                 ViInt64 bufferSizeInElements = sampleChunk.size() / sizeof(ViInt32);
 
-                auto sampleDeadline=std::chrono::steady_clock::now()+seconds(2);
+                auto sampleDeadline=std::chrono::steady_clock::now()+std::chrono::duration<double>(ioTimeoutSeconds);
                 do
                 {
                     auto fetchStart=Clock::now();
@@ -672,29 +754,13 @@ int main(int argc, char** argv)
                     }
                     g_dataCondVar.notify_one();
                 }
-                else
-                {
-                    // 如果没有读到数据，立刻归还缓冲区
-                    std::lock_guard<std::mutex> lock(g_freeBufferMutex);
-                    g_freeBufferQueue.push(std::move(sampleChunk));
-                }
 
                 totalTriggers += numAvailableRecords;
-                if(totalTriggers%512==0)
-                    cout << std::dec << "FRAME_PROGRESS frames=" << totalTriggers/512
+                if(totalTriggers%linesPerFrame==0)
+                    cout << std::dec << "FRAME_PROGRESS frames=" << totalTriggers/linesPerFrame
                          << " seconds=" << std::chrono::duration<double>(Clock::now()-acquisitionStartTime).count()
                          << " sink_bytes=" << g_writtenBytes.load() << " remaining=" << remainingElements << std::endl;
 
-                // --- 为避免性能影响，建议在高吞吐量测试时注释掉下面的输出 ---
-                // auto currentTime = std::chrono::steady_clock::now();
-                // auto elapsed = currentTime - acquisitionStartTime;
-                // auto elapsedNs =
-                //     std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
-                //         .count();
-                // std::cout << "时间: " << elapsedNs << "ns, "
-                //           << "检测到触发数: " << numAvailableRecords
-                //           << ", 总触发次数: " << totalTriggers
-                //           << std::endl;
             }
 
             // 中文：让出CPU但不请求定时休眠，防止Windows定时粒度造成周期性积压。
@@ -721,7 +787,10 @@ int main(int argc, char** argv)
         {
             if(totalTriggers!=targetRecords || int64_t(frameMarkers.size())!=targetRecords) throw runtime_error("Incomplete requested frames");
         }
+        if(totalTriggers == 0) throw runtime_error("No complete records acquired");
+        if(uint64_t(fetchedBytes) != totalDataWritten) throw runtime_error("Fetched/written byte count mismatch");
         saveReport(true);
+        cout << "TIMING_RESULT anomalies=" << timingAnomalies << " alignment_verified=false (external first-line verification required)\n";
         cout << std::dec << "RUN_RESULT records=" << totalTriggers << " elapsed_s=" << actualSeconds
              << " fetched_bytes=" << fetchedBytes << " written_bytes=" << totalDataWritten
              << " max_first=" << maxFirstElement << " max_remaining=" << maxRemaining
@@ -738,6 +807,7 @@ int main(int argc, char** argv)
         // 中文：板卡已在写线程排空前停止。
 
         // 关闭驱动
+        restoreGate();
         checkApiCall(AqMD3_close(session));
         cout << "\nDriver closed\n";
         return 0;
@@ -763,7 +833,10 @@ int main(int argc, char** argv)
             flushSeconds=std::chrono::duration<double>(Clock::now()-flushStart).count();
         }
         if(started) { try { saveReport(false); } catch(...) { cerr << "Failure report could not be saved\n"; } }
-        if (session != VI_NULL) AqMD3_close(session);
+        if (session != VI_NULL) {
+            try { restoreGate(); } catch(...) { cerr << "IO2 restore failed; check SFP before next run\n"; }
+            AqMD3_close(session);
+        }
         return 1;
     }
 }
@@ -776,22 +849,12 @@ int main(int argc, char** argv)
 // 检查API调用返回值，打印错误或抛异常
 void testApiCall(ViStatus status, char const *functionName)
 {
-    ViInt32 ErrorCode;
-    ViChar ErrorMessage[512];
-
-    if (status > 0) // 警告
-    {
-        AqMD3_GetError(VI_NULL, &ErrorCode, sizeof(ErrorMessage), ErrorMessage);
-        cerr << "** Warning during " << functionName << ": 0x" << hex << ErrorCode
-             << ", " << ErrorMessage << "\n";
-    }
-    else if (status < 0) // 错误
-    {
-        AqMD3_GetError(VI_NULL, &ErrorCode, sizeof(ErrorMessage), ErrorMessage);
-        cerr << "** ERROR during " << functionName << ": 0x" << hex << ErrorCode
-             << ", " << ErrorMessage << "\n";
-        throw runtime_error(ErrorMessage);
-    }
+    if(status == VI_SUCCESS) return;
+    ViChar message[1024]{};
+    AqMD3_error_message(g_session, status, message);
+    cerr << (status < 0 ? "ERROR " : "WARNING ") << functionName
+         << " status=0x" << hex << status << std::dec << " " << message << '\n';
+    if(status < 0) throw runtime_error(message);
 }
 
 // 读取指定流中当前可用的元素，带缓冲区大小检查和重试
@@ -812,82 +875,14 @@ FetchAvailableElements(ViSession session, ViConstString streamName,
         (ViInt32 *)bufferData, &remainingElements, &actualElements,
         &firstValidElement));
     g_markerRemainingMax=std::max(g_markerRemainingMax,remainingElements);
-    if ((actualElements == 0) && (remainingElements > 0))
-    {
-        if (nbrElementsToFetch <= remainingElements)
-        {
-            // 只返回实际可读数据，不抛异常
-            return LibTool::ArraySegment<int32_t>(buffer, 0, 0);
-        }
-        checkApiCall(AqMD3_StreamFetchDataInt32(
-            session, streamName, remainingElements, bufferSize,
-            (ViInt32 *)bufferData, &remainingElements, &actualElements,
-            &firstValidElement));
-    }
+    // 中文：不消费半条marker，样本与marker必须一一对应。
+    if(firstValidElement < 0 || actualElements < 0 || firstValidElement + actualElements > bufferSize)
+        throw runtime_error("Marker buffer bounds");
+    if(actualElements != 0 && actualElements != nbrElementsToFetch)
+        throw runtime_error("Incomplete marker");
 
     return LibTool::ArraySegment<int32_t>(buffer, (size_t)firstValidElement,
                                           (size_t)actualElements);
-}
-
-// 读取指定数量的元素，要求必须读满，支持多次尝试
-// 注意: 此函数在新的内存池设计中不再被主循环使用，但为了完整性暂时保留。
-LibTool::ArraySegment<int32_t> FetchElements(ViSession session,
-                                             ViConstString streamName,
-                                             ViInt64 nbrElementsToFetch,
-                                             FetchBuffer &buffer)
-{
-    if (nbrElementsToFetch == 0)
-        return LibTool::ArraySegment<int32_t>(buffer, 0, 0);
-    int32_t *bufferData = buffer.data();
-    ViInt64 const bufferSize = buffer.size();
-    if (bufferSize < nbrElementsToFetch)
-        throw std::invalid_argument(
-            "Buffer size is smaller than the requested elements to fetch");
-    for (int nbrAttempts = 0; nbrAttempts < nbrWaitForSamplesAttempts;
-         ++nbrAttempts)
-    {
-        ViInt64 firstElement = 0;
-        ViInt64 actualElements = 0;
-        ViInt64 remainingElements = 0;
-        checkApiCall(AqMD3_StreamFetchDataInt32(
-            session, streamName, nbrElementsToFetch, bufferSize,
-            (ViInt32 *)bufferData, &remainingElements, &actualElements,
-            &firstElement));
-        if (actualElements > 0)
-        {
-
-            return LibTool::ArraySegment<int32_t>(buffer, size_t(firstElement),
-                                                  size_t(actualElements));
-        }
-        if ((actualElements == 0) && (remainingElements < nbrElementsToFetch))
-        {
-            // std::cout << "Wait for record samples to be ready for fetch\n";
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(recordDurationInMs));
-            continue;
-        }
-        // 不再抛异常，直接返回实际读取到的数据
-        return LibTool::ArraySegment<int32_t>(buffer, size_t(firstElement),
-                                              size_t(actualElements));
-    }
-    // 多次尝试均失败，直接返回空
-    return LibTool::ArraySegment<int32_t>(buffer, 0, 0);
-}
-
-void SaveRecord(LibTool::TriggerMarker const &triggerMarker,
-                ViInt64 nbrRecordElements,
-                LibTool::ArraySegment<int32_t> const &elementBuffer,
-                double timestampInterval, std::ostream &output)
-{
-    // 计算采样点数量
-    size_t nbrRecordSamples =
-        size_t(nbrRecordElements) * size_t(nbrSamplesPerElement);
-    int16_t *sampleArray = reinterpret_cast<int16_t *>(elementBuffer.GetData());
-    // 直接写二进制数据
-    output.write(reinterpret_cast<const char *>(&triggerMarker.recordIndex),
-                 sizeof(triggerMarker.recordIndex));
-    output.write(reinterpret_cast<const char *>(sampleArray),
-                 nbrRecordSamples * sizeof(int16_t));
 }
 
 // 根据仪器型号返回时间戳周期（秒），用于时间戳计算
