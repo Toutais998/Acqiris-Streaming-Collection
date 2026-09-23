@@ -26,3 +26,7 @@ Added `Trouble_Shot.md` and this directory-local `AGENTS.md`. The troubleshootin
 新增 MATLAB 重建脚本，按当前 `D:\Acq_Storage` 二进制输出读取每条 line，并以 512 个像素的积分/平均值生成 512×512 图像。同步补充了信号发生器测试建议和中文提交规范。
 
 The source of truth is `CPP_IVIC_Streaming.cpp`. Use Git commits/tags for future snapshots instead of copying `.cpp` files with version names.
+
+## 2026-09-23：LINE与激光同步调查
+
+依据SFP CHM、安装的AqMD3 SDK CHM及SA230P手册确认IO2的In-TriggerEnable；多源AND/OR和独立ARM标为Not Supported。新增独立GateSyncProbe并用devenv.com编译，完成真实卡功能查询、配置应用和用户接线后的触发测试。原6145216点窗口600条无overflow但347个间隔偏短；测试窗口增加4.8µs至6150016点后，两次600条均无overflow，除初始4/6个偏短间隔外为正常行/帧间隔。50Ω激光高2V时阈值用1.0V；首条模拟波形约1000.06Hz但触及ADC下限。保留原始日志、初期零记录超时及未验证项，不将样本成功等同于首沿/首帧验证。生产源码未改并已备份；CST不会等待主机读完才重触发。详见LASER_LINE_SYNC.md及GateSyncProbe/VALIDATION_20260923.md。

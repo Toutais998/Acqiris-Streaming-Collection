@@ -20,3 +20,7 @@
 4. `D:\Acq_Storage` 存在且有足够空间。
 
 版本变更记录见 [`CPP_IVIC_Streaming/VERSION_HISTORY.md`](CPP_IVIC_Streaming/VERSION_HISTORY.md)。旧版本源文件不再放在活动目录中，后续版本应通过 Git 提交记录管理。
+
+## LINE + 1 MHz激光同步
+
+2026-09-23确认SA230P的IO2支持`In-TriggerEnable`，独立GateSyncProbe已完成实卡双信号测试：原窗口会出现非行同步记录，加长4.8µs后两次600条均无overflow且稳定段符合行/帧周期；启动边界和首个激光沿仍需验证。原生产入口未改。接线、API依据、原始测试日志及下一步见[同步调查与交接](CPP_IVIC_Streaming/LASER_LINE_SYNC.md)。
