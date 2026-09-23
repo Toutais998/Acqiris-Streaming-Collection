@@ -1,5 +1,5 @@
 真实SA230P测试配置及MATLAB结果；2026-09-22。原始数据保留在D盘。
-FILE BNU_Mark25_Streaming_0922_170329.dat
+FILE BNU_Mark1_0922_170329.dat
 {
 "status":"complete",
 "dataSaved":true,
@@ -27,7 +27,7 @@ FILE BNU_Mark25_Streaming_0922_170329.dat
 "maxMarkerRemaining":0,
 "maxFirstElement":8
 }
-FILE BNU_Mark25_Streaming_0922_171533.dat
+FILE BNU_Mark1_0922_171533.dat
 {
 "status":"complete",
 "dataSaved":true,
@@ -55,7 +55,7 @@ FILE BNU_Mark25_Streaming_0922_171533.dat
 "maxMarkerRemaining":256,
 "maxFirstElement":8
 }
-FILE BNU_Mark25_Streaming_0922_172010.dat
+FILE BNU_Mark1_0922_172010.dat
 {
 "status":"complete",
 "dataSaved":true,
@@ -85,7 +85,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
 }
 [
   {
-    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
     "fileBytes": 1.50994944E+11,
     "availableFrames": 24,
     "frameIndices": [
@@ -95,7 +95,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
     ],
     "reconstructionSeconds": 18.3316626,
     "frameStats": {
-      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
       "frameIndex": 1,
       "imageSize": [
         512,
@@ -117,7 +117,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
     }
   },
   {
-    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
     "fileBytes": 1.50994944E+11,
     "availableFrames": 24,
     "frameIndices": [
@@ -127,7 +127,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
     ],
     "reconstructionSeconds": 18.3316626,
     "frameStats": {
-      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
       "frameIndex": 12,
       "imageSize": [
         512,
@@ -149,7 +149,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
     }
   },
   {
-    "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+    "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
     "fileBytes": 1.50994944E+11,
     "availableFrames": 24,
     "frameIndices": [
@@ -159,7 +159,7 @@ FILE BNU_Mark25_Streaming_0922_172010.dat
     ],
     "reconstructionSeconds": 18.3316626,
     "frameStats": {
-      "inputFile": "D:\\Acq_Storage\\BNU_Mark25_Streaming_0922_172010.dat",
+      "inputFile": "D:\\Acq_Storage\\BNU_Mark1_0922_172010.dat",
       "frameIndex": 24,
       "imageSize": [
         512,

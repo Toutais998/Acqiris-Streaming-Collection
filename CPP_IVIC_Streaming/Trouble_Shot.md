@@ -1,5 +1,11 @@
 # SA230P 流式采集问题排查与下一步建议
 
+## 帧级飞返与总采集时间
+
+每512行出现约1 ms额外间隔与 ScanImage 的 `Frame flyback=1 ms` 一致。它是帧级时序间隔，不是漏触发，也不应写进单行 record。总帧周期按 `linesPerFrame × linePeriod + frameFlyback` 计算；总采集时间约为 `framesToAcquire × framePeriod`，另加启动相位和停止/排空时间。
+
+当前代码默认只需修改 `linePeriod`、`pixelsPerLine` 和 `framesToAcquire`。有效占空比仍按采集契约固定为0.9；像素时间由对齐后的 record 长度和像素数自动计算，不再需要单独维护 `pixelPeriod`。命令行 `--frames N` 可临时覆盖帧数。
+
 ## 最新实测结论（2026-09-22，优先于下方早期推测）
 
 补充边界：与构建有时间重叠的Release落盘一轮511条、积压约666MB；构建结束独立复测548条、无积压。因此尚不能宣称任何系统负载下都稳定。普通5秒测试停止时板端未读取尾部不保存，已在日志注明。见交接报告中的文件和后续验证。

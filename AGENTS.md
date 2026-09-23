@@ -6,7 +6,7 @@ This repository controls an Acqiris/SA230P digitizer through the IVI-C++ AqMD3 d
 
 ## Acquisition contract
 
-The XY galvo scanner emits a 9,104 µs line period at approximately 109.8 Hz. Ninety percent of each period is the forward scan; the final ten percent is galvo flyback. The active streaming configuration uses the rising edge of `External1` (one trigger per line), a 1 GS/s sample rate, a 24 ns hardware dead time, and a record length derived from the 8,193.6 µs active line window. Do not replace the line trigger with the 2.5 MHz pixel/40 clock: that rate is a synchronization reference, not a viable record trigger.
+The XY galvo scanner emits a 9,104 µs line period at approximately 109.8 Hz. Ninety percent of each period is the forward scan; the final ten percent is galvo flyback. The active streaming configuration uses the rising edge of `External1` (one trigger per line), a 1 GS/s sample rate, a 32 ns hardware dead time, and a record length derived from the 8,193.6 µs active line window. Do not replace the line trigger with the 2.5 MHz pixel/40 clock: that rate is a synchronization reference, not a viable record trigger.
 
 ## Safety and data integrity
 

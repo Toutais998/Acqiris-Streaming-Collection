@@ -11,7 +11,7 @@ Release x64经devenv.com构建成功，--frame模式采集512条完整记录后�
 - marker索引连续，保存512行CSV；正常间隔约9.104ms，其中一次10.104068ms，保留此时序异常，不能声称行周期完全恒定。
 - 只保存目标512条完整record，停卡后的额外板端尾部不纳入该帧。
 
-原始数据：`D:\Acq_Storage\BNU_Mark25_Streaming_0922_162800.dat`。
+原始数据：`D:\Acq_Storage\BNU_Mark1_0922_162800.dat`。
 时间戳：同名`.dat.markers.csv`。原始dat仍是连续小端int16，没有marker头或文件头。
 
 ## MATLAB 修正与实测
@@ -39,7 +39,7 @@ Release x64经devenv.com构建成功，--frame模式采集512条完整记录后�
 
 ## 输出文件
 
-都在`D:\Acq_Storage`，前缀为`BNU_Mark25_Streaming_0922_162800_frame0001`：
+都在`D:\Acq_Storage`，前缀为`BNU_Mark1_0922_162800_frame0001`：
 
 - `.mat`：原始double图像、分箱边界、参数、统计和marker。
 - `.png`：512×512、16-bit固定ADC满量程灰度图；像素值=round(ADC均值+32768)。
